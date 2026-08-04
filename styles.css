@@ -48,6 +48,13 @@
   background: #2f6bff;
   color: #fff;
   flex: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.ct-head.ct-dragging {
+  cursor: grabbing;
 }
 .ct-title {
   font-size: 13px;

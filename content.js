@@ -10,6 +10,8 @@
   let panel = null;
   let lastSelection = { text: "", rect: null };
   let speaking = null;
+  let dragState = null;
+  let suppressNextClick = false;
 
   function detectLang(text) {
     return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text) ? "zh" : "en";
@@ -161,6 +163,8 @@
     positionPanel(rect);
     panel.style.display = "block";
 
+    panel.querySelector("." + NS + "head").addEventListener("pointerdown", onHeadPointerDown);
+
     const srcBtn = panel.querySelector("." + NS + "speak-src");
     srcBtn.addEventListener("click", function () {
       if (speak(text, lang)) this.classList.add(NS + "active");
@@ -240,6 +244,47 @@
     panel.style.top = y + "px";
   }
 
+  function onHeadPointerDown(e) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (e.target instanceof Element && e.target.closest("." + NS + "close")) return;
+    const rect = panel.getBoundingClientRect();
+    dragState = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      left: rect.left,
+      top: rect.top,
+      moved: false
+    };
+    panel.setPointerCapture(e.pointerId);
+    panel.classList.add(NS + "dragging");
+    e.preventDefault();
+  }
+
+  function onHeadPointerMove(e) {
+    if (!dragState || dragState.pointerId !== e.pointerId) return;
+    const dx = e.clientX - dragState.startX;
+    const dy = e.clientY - dragState.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 2) dragState.moved = true;
+    const margin = 8;
+    const w = panel.offsetWidth;
+    const h = panel.offsetHeight;
+    let x = Math.min(Math.max(dragState.left + dx, margin), window.innerWidth - w - margin);
+    let y = Math.min(Math.max(dragState.top + dy, margin), window.innerHeight - h - margin);
+    panel.style.left = x + "px";
+    panel.style.top = y + "px";
+  }
+
+  function onHeadPointerUp(e) {
+    if (!dragState || dragState.pointerId !== e.pointerId) return;
+    if (dragState.moved) suppressNextClick = true;
+    dragState = null;
+    panel.classList.remove(NS + "dragging");
+    try {
+      panel.releasePointerCapture(e.pointerId);
+    } catch (err) {}
+  }
+
   function closePanel() {
     if (speaking) {
       window.speechSynthesis.cancel();
@@ -301,6 +346,10 @@
   }
 
   function onClick(e) {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      return;
+    }
     if (!panel && !icon) return;
     const t = e.target;
     const inside = t instanceof Element && t.closest("." + NS + "panel,." + NS + "icon-btn");
@@ -327,6 +376,8 @@
   document.addEventListener("click", onClick, true);
   window.addEventListener("scroll", onScroll, true);
   window.addEventListener("resize", onResize);
+  document.addEventListener("pointermove", onHeadPointerMove);
+  document.addEventListener("pointerup", onHeadPointerUp);
 
   if (window.speechSynthesis) {
     window.speechSynthesis.getVoices();
