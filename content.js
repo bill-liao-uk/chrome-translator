@@ -1,0 +1,335 @@
+(function () {
+  "use strict";
+
+  const NS = "ct-";
+  const LANG_NAMES = { zh: "中文", en: "英文" };
+  const VOICE_LANG = { zh: "zh-CN", en: "en-US" };
+  const MAX_TEXT = 3000;
+
+  let icon = null;
+  let panel = null;
+  let lastSelection = { text: "", rect: null };
+  let speaking = null;
+
+  function detectLang(text) {
+    return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text) ? "zh" : "en";
+  }
+
+  function getVoice(lang) {
+    const voices = window.speechSynthesis.getVoices();
+    const norm = (l) => String(l).replace("_", "-").toLowerCase();
+    return (
+      voices.find((v) => norm(v.lang) === norm(lang)) ||
+      voices.find((v) => norm(v.lang).startsWith(norm(lang).split("-")[0])) ||
+      null
+    );
+  }
+
+  function speak(text, lang) {
+    const synth = window.speechSynthesis;
+    if (speaking && synth.speaking && speaking._ctText === text) {
+      synth.cancel();
+      speaking = null;
+      return false;
+    }
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u._ctText = text;
+    u.lang = VOICE_LANG[lang] || "en-US";
+    const voice = getVoice(u.lang);
+    if (voice) u.voice = voice;
+    u.rate = 1;
+    u.pitch = 1;
+    u.onend = function () { speaking = null; };
+    u.onerror = function () { speaking = null; };
+    synth.speak(u);
+    speaking = u;
+    return true;
+  }
+
+  function currentText() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString()) return "";
+    const node = sel.anchorNode;
+    if (node && node.nodeType === Node.ELEMENT_NODE && node.closest("." + NS + "panel,." + NS + "icon-btn")) {
+      return "";
+    }
+    if (node && node.parentNode && node.parentNode.closest && node.parentNode.closest("." + NS + "panel,." + NS + "icon-btn")) {
+      return "";
+    }
+    return sel.toString().trim();
+  }
+
+  function selectionRect() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const r = sel.getRangeAt(0);
+    const rect = r.getBoundingClientRect();
+    if (rect && (rect.width > 0 || rect.height > 0)) return rect;
+    return null;
+  }
+
+  function scheduleSelectionUpdate() {
+    setTimeout(updateSelectionUI, 10);
+  }
+
+  function updateSelectionUI() {
+    if (panel) return;
+    const text = currentText();
+    const rect = selectionRect();
+    if (text && rect) {
+      lastSelection = { text: text.slice(0, MAX_TEXT), rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } };
+      showIcon(rect);
+    } else {
+      hideIcon();
+    }
+  }
+
+  function createIcon() {
+    icon = document.createElement("button");
+    icon.className = NS + "icon-btn";
+    icon.type = "button";
+    icon.title = "翻译选中文本";
+    icon.innerHTML = "译";
+    icon.addEventListener("click", onIconClick);
+    document.documentElement.appendChild(icon);
+  }
+
+  function showIcon(rect) {
+    if (!icon) createIcon();
+    const size = 26;
+    let x = Math.min(rect.right - size / 2, window.innerWidth - size - 4);
+    let y = rect.bottom + 6;
+    if (y + size > window.innerHeight - 4) y = Math.max(4, rect.top - size - 6);
+    if (x < 4) x = 4;
+    icon.style.left = x + "px";
+    icon.style.top = y + "px";
+    icon.style.display = "block";
+  }
+
+  function hideIcon() {
+    if (icon) icon.style.display = "none";
+  }
+
+  function onIconClick() {
+    const text = lastSelection.text;
+    const rect = lastSelection.rect;
+    if (!text) return;
+    hideIcon();
+    if (panel) {
+      panel.textContent = "";
+      closePanel();
+    }
+    showPanel(text, rect);
+  }
+
+  function showPanel(text, rect) {
+    createPanel();
+    const lang = detectLang(text);
+    panel.innerHTML =
+      '<div class="' + NS + 'head">' +
+      '<span class="' + NS + 'title">划线翻译</span>' +
+      '<button type="button" class="' + NS + 'close" title="关闭">×</button>' +
+      "</div>" +
+      '<div class="' + NS + 'body">' +
+      '<div class="' + NS + 'row">' +
+      '<div class="' + NS + 'row-head">' +
+      '<span class="' + NS + 'lang">原文（' + LANG_NAMES[lang] + "）</span>" +
+      '<button type="button" class="' + NS + 'speak ' + NS + 'speak-src">朗读原文</button>' +
+      "</div>" +
+      '<div class="' + NS + 'text ' + NS + 'source">' + escapeHtml(text) + "</div>" +
+      "</div>" +
+      '<div class="' + NS + 'row">' +
+      '<div class="' + NS + 'row-head">' +
+      '<span class="' + NS + 'lang">译文（…）</span>' +
+      '<button type="button" class="' + NS + 'speak ' + NS + 'speak-tgt" disabled>朗读译文</button>' +
+      "</div>" +
+      '<div class="' + NS + 'text ' + NS + 'target">' +
+      '<span class="' + NS + 'loading">正在翻译…</span>' +
+      "</div>" +
+      "</div>" +
+      "</div>" +
+      '<div class="' + NS + 'foot">' +
+      '<button type="button" class="' + NS + 'copy">复制译文</button>' +
+      '<span class="' + NS + 'status"></span>' +
+      "</div>";
+
+    if (text.length >= MAX_TEXT) {
+      panel.querySelector("." + NS + "status").textContent = "文本过长，仅翻译前 " + MAX_TEXT + " 字符";
+    }
+
+    positionPanel(rect);
+    panel.style.display = "block";
+
+    const srcBtn = panel.querySelector("." + NS + "speak-src");
+    srcBtn.addEventListener("click", function () {
+      if (speak(text, lang)) this.classList.add(NS + "active");
+    });
+    panel.querySelector("." + NS + "close").addEventListener("click", closePanel);
+    panel.querySelector("." + NS + "copy").addEventListener("click", function () {
+      const tr = panel.querySelector("." + NS + "target").innerText;
+      copyText(tr);
+    });
+
+    chrome.runtime.sendMessage({ type: "TRANSLATE", text: text }, function (res) {
+      if (chrome.runtime.lastError) {
+        showError(chrome.runtime.lastError.message);
+        return;
+      }
+      if (panel === null) return;
+      const targetEl = panel.querySelector("." + NS + "target");
+      const tgtBtn = panel.querySelector("." + NS + "speak-tgt");
+      const langLabel = panel.querySelector("." + NS + "row:nth-of-type(2) ." + NS + "lang");
+      const statusEl = panel.querySelector("." + NS + "status");
+      if (!res || !res.ok) {
+        targetEl.textContent = "";
+        targetEl.appendChild(makeErrorNode(res ? res.error : "翻译失败"));
+        if (statusEl) statusEl.textContent = "";
+        return;
+      }
+      targetEl.textContent = res.text;
+      tgtBtn.disabled = false;
+      tgtBtn.addEventListener("click", function () {
+        if (speak(res.text, res.target)) this.classList.add(NS + "active");
+      });
+      if (langLabel) langLabel.textContent = "译文（" + LANG_NAMES[res.target] + "）";
+      if (statusEl) statusEl.textContent = "由本地模型完成";
+    });
+  }
+
+  function makeErrorNode(msg) {
+    const el = document.createElement("span");
+    el.className = NS + "error";
+    el.textContent = "翻译失败：" + (msg || "未知错误");
+    return el;
+  }
+
+  function showError(msg) {
+    if (!panel) return;
+    const targetEl = panel.querySelector("." + NS + "target");
+    if (targetEl) {
+      targetEl.textContent = "";
+      targetEl.appendChild(makeErrorNode(msg));
+    }
+  }
+
+  function createPanel() {
+    if (panel) return;
+    panel = document.createElement("div");
+    panel.className = NS + "panel";
+    panel.style.display = "none";
+    document.documentElement.appendChild(panel);
+  }
+
+  function positionPanel(rect) {
+    const margin = 8;
+    const w = Math.min(360, window.innerWidth - margin * 2);
+    const maxH = window.innerHeight - margin * 2;
+    panel.style.width = w + "px";
+    panel.style.maxHeight = maxH + "px";
+    let x = rect.left;
+    if (x + w > window.innerWidth - margin) x = Math.max(margin, window.innerWidth - w - margin);
+    if (x < margin) x = margin;
+    let y = rect.bottom + 6;
+    const estH = Math.min(panel.scrollHeight || 260, maxH);
+    if (y + estH > window.innerHeight - margin) {
+      y = rect.top - estH - 6;
+      if (y < margin) y = margin;
+    }
+    panel.style.left = x + "px";
+    panel.style.top = y + "px";
+  }
+
+  function closePanel() {
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      speaking = null;
+    }
+    if (panel) {
+      panel.remove();
+      panel = null;
+    }
+  }
+
+  function copyText(text) {
+    const statusEl = panel && panel.querySelector("." + NS + "status");
+    const done = function () {
+      if (statusEl) statusEl.textContent = "已复制";
+    };
+    const fail = function () {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        done();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = "复制失败";
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fail);
+    } else {
+      fail();
+    }
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function onMouseUp(e) {
+    if (e.target instanceof Element && e.target.closest("." + NS + "icon-btn,." + NS + "panel")) return;
+    scheduleSelectionUpdate();
+  }
+
+  function onKeyUp(e) {
+    if (e.key === "Escape") {
+      closePanel();
+      hideIcon();
+      return;
+    }
+    if (e.key === "Shift" || e.ctrlKey || e.metaKey) {
+      scheduleSelectionUpdate();
+    }
+  }
+
+  function onClick(e) {
+    if (!panel && !icon) return;
+    const t = e.target;
+    const inside = t instanceof Element && t.closest("." + NS + "panel,." + NS + "icon-btn");
+    if (!inside) closePanel();
+  }
+
+  function onScroll(e) {
+    if (panel) {
+      const t = e.target;
+      if (t === document || !(t instanceof Element && t.closest("." + NS + "panel"))) {
+        closePanel();
+      }
+    }
+    hideIcon();
+  }
+
+  function onResize() {
+    if (panel && lastSelection.rect) positionPanel(lastSelection.rect);
+    else if (icon && icon.style.display === "block" && lastSelection.rect) showIcon(lastSelection.rect);
+  }
+
+  document.addEventListener("mouseup", onMouseUp, true);
+  document.addEventListener("keyup", onKeyUp, true);
+  document.addEventListener("click", onClick, true);
+  window.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", onResize);
+
+  if (window.speechSynthesis) {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = function () { window.speechSynthesis.getVoices(); };
+  }
+})();

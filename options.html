@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>划线翻译设置</title>
+  <style>
+    :root {
+      --primary: #2f6bff;
+      --primary-dark: #1f56d9;
+      --text: #1f2329;
+      --muted: #86909c;
+      --border: #e5e6eb;
+      --bg: #f7f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .page {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 4px;
+    }
+    .subtitle { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+    .card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+    .card h2 {
+      font-size: 15px;
+      margin: 0 0 14px;
+    }
+    label.field {
+      display: block;
+      margin-bottom: 14px;
+    }
+    .field-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .field-desc {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      color: var(--text);
+      background: #fff;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(47, 107, 255, 0.15);
+    }
+    .radio-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .radio-card {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      background: #fff;
+      font-weight: 600;
+      transition: border-color 0.15s;
+    }
+    .radio-card input { margin: 0; accent-color: var(--primary); }
+    .radio-card.selected {
+      border-color: var(--primary);
+      background: #f0f4ff;
+    }
+    .section.hidden { display: none; }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 4px;
+    }
+    button {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--primary);
+      color: #fff;
+    }
+    button.primary:hover { background: var(--primary-dark); }
+    button.secondary {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    button.secondary:hover { border-color: var(--primary); color: var(--primary); }
+    .status {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .status.ok { color: #00b42a; }
+    .status.err { color: #f53f3f; }
+    .model-list {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 520px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>划线翻译</h1>
+    <p class="subtitle">选中网页文本即可翻译（英文 ↔ 中文），翻译由本地 Ollama 或 llama.cpp 模型完成。</p>
+
+    <div class="card">
+      <h2>翻译后端</h2>
+      <div class="radio-row">
+        <label class="radio-card selected" id="card-ollama">
+          <input type="radio" name="backend" value="ollama" id="rb-ollama" checked />
+          <span>Ollama</span>
+        </label>
+        <label class="radio-card" id="card-llamacpp">
+          <input type="radio" name="backend" value="llamacpp" id="rb-llamacpp" />
+          <span>llama.cpp</span>
+        </label>
+      </div>
+
+      <div class="section" id="sec-ollama">
+        <label class="field">
+          <span class="field-label">Ollama 服务地址</span>
+          <input type="text" id="ollamaBaseUrl" placeholder="http://localhost:11434" />
+          <span class="field-desc">默认 http://localhost:11434，如需远程访问请配置 OLLAMA_HOST。</span>
+        </label>
+        <label class="field">
+          <span class="field-label">模型名称</span>
+          <input type="text" id="ollamaModel" list="ollama-models" placeholder="qwen2.5:7b" />
+          <datalist id="ollama-models"></datalist>
+          <span class="field-desc">建议使用翻译能力较强的模型，如 qwen2.5 系列。</span>
+        </label>
+      </div>
+
+      <div class="section hidden" id="sec-llamacpp">
+        <label class="field">
+          <span class="field-label">llama.cpp 服务地址</span>
+          <input type="text" id="llamacppBaseUrl" placeholder="http://localhost:8080" />
+          <span class="field-desc">llama.cpp 启动示例：<code>llama-server -m model.gguf</code>（默认端口 8080）。</span>
+        </label>
+        <label class="field">
+          <span class="field-label">模型名称（可选）</span>
+          <input type="text" id="llamacppModel" list="llamacpp-models" placeholder="留空表示使用服务器默认模型" />
+          <datalist id="llamacpp-models"></datalist>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>高级选项</h2>
+      <div class="grid-2">
+        <label class="field">
+          <span class="field-label">温度 Temperature</span>
+          <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.2" />
+        </label>
+        <label class="field">
+          <span class="field-label">最大生成长度</span>
+          <input type="number" id="maxTokens" min="64" max="2048" step="32" value="512" />
+        </label>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="secondary" id="btnTest">测试连接</button>
+      <button type="button" class="primary" id="btnSave">保存设置</button>
+      <span class="status" id="status"></span>
+    </div>
+    <div class="model-list" id="modelList"></div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
