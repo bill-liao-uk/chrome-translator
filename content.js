@@ -27,14 +27,30 @@
     );
   }
 
+  function stopSpeech() {
+    const synth = window.speechSynthesis;
+    if (synth) {
+      try {
+        if (typeof synth.pause === "function") synth.pause();
+      } catch (err) {
+        // ignore
+      }
+      try {
+        if (typeof synth.cancel === "function") synth.cancel();
+      } catch (err) {
+        // ignore
+      }
+    }
+    speaking = null;
+  }
+
   function speak(text, lang) {
     const synth = window.speechSynthesis;
-    if (speaking && synth.speaking && speaking._ctText === text) {
-      synth.cancel();
-      speaking = null;
+    if (speaking && synth && synth.speaking && speaking._ctText === text) {
+      stopSpeech();
       return false;
     }
-    synth.cancel();
+    stopSpeech();
     const u = new SpeechSynthesisUtterance(text);
     u._ctText = text;
     u.lang = VOICE_LANG[lang] || "en-US";
@@ -42,8 +58,26 @@
     if (voice) u.voice = voice;
     u.rate = 1;
     u.pitch = 1;
-    u.onend = function () { speaking = null; };
-    u.onerror = function () { speaking = null; };
+    u.onend = function () {
+      stopSpeech();
+      if (window.speechSynthesis && typeof window.speechSynthesis.cancel === "function") {
+        try {
+          window.speechSynthesis.cancel();
+        } catch (err) {
+          // ignore
+        }
+      }
+    };
+    u.onerror = function () {
+      stopSpeech();
+      if (window.speechSynthesis && typeof window.speechSynthesis.cancel === "function") {
+        try {
+          window.speechSynthesis.cancel();
+        } catch (err) {
+          // ignore
+        }
+      }
+    };
     synth.speak(u);
     speaking = u;
     return true;
@@ -286,10 +320,7 @@
   }
 
   function closePanel() {
-    if (speaking) {
-      window.speechSynthesis.cancel();
-      speaking = null;
-    }
+    stopSpeech();
     if (panel) {
       panel.remove();
       panel = null;
@@ -371,6 +402,18 @@
     else if (icon && icon.style.display === "block" && lastSelection.rect) showIcon(lastSelection.rect);
   }
 
+  function cleanup() {
+    stopSpeech();
+    if (panel) {
+      panel.remove();
+      panel = null;
+    }
+    if (icon) {
+      icon.remove();
+      icon = null;
+    }
+  }
+
   document.addEventListener("mouseup", onMouseUp, true);
   document.addEventListener("keyup", onKeyUp, true);
   document.addEventListener("click", onClick, true);
@@ -378,6 +421,8 @@
   window.addEventListener("resize", onResize);
   document.addEventListener("pointermove", onHeadPointerMove);
   document.addEventListener("pointerup", onHeadPointerUp);
+  window.addEventListener("pagehide", cleanup);
+  window.addEventListener("beforeunload", cleanup);
 
   if (window.speechSynthesis) {
     window.speechSynthesis.getVoices();
