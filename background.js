@@ -36,6 +36,16 @@ function buildSystemPrompt(target) {
   );
 }
 
+function buildDefinitionPrompt() {
+  return (
+    "你是一名专业词典编辑。用户将提供一个单词或短语，请你：\n" +
+    "1) 标注词性（如 n., v., adj.）\n" +
+    "2) 提供简明的中文释义（针对英语单词），或英文释义（针对中文词）\n" +
+    "3) 给出两个常见例句，并为每个例句提供中文翻译。\n" +
+    "只输出内容，不添加其他说明，尽量使用清晰可读的分段格式。"
+  );
+}
+
 async function callOllama(settings, systemPrompt, userText) {
   const url = settings.ollamaBaseUrl.replace(/\/+$/, "") + "/api/chat";
   const res = await fetch(url, {
@@ -145,6 +155,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const settings = await getSettings();
           const result = await translate(String(msg.text), settings);
           sendResponse({ ok: true, text: result.translated, source: result.source, target: result.target });
+        }
+        break;
+      case "DEFINE":
+        {
+          const settings = await getSettings();
+          const word = String(msg.word || "");
+          const systemPrompt = buildDefinitionPrompt();
+          try {
+            let def;
+            if (settings.backend === "llamacpp") {
+              def = await callLlamacpp(settings, systemPrompt, word);
+            } else {
+              def = await callOllama(settings, systemPrompt, word);
+            }
+            sendResponse({ ok: true, text: def });
+          } catch (err) {
+            sendResponse({ ok: false, error: (err && err.message) || String(err) });
+          }
         }
         break;
       case "TEST_CONNECTION":

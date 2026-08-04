@@ -251,6 +251,31 @@
       });
       if (langLabel) langLabel.textContent = "译文（" + LANG_NAMES[res.target] + "）";
       if (statusEl) statusEl.textContent = "由本地模型完成";
+
+      // If the user selected a single word/phrase (no whitespace), show detailed definition
+      const isSingleWord = typeof text === "string" && !/\s/.test(text) && text.length > 0 && text.length <= 64;
+      if (isSingleWord) {
+        const bodyEl = panel.querySelector('.' + NS + 'body');
+        const defRow = document.createElement('div');
+        defRow.className = NS + 'row';
+        defRow.innerHTML =
+          '<div class="' + NS + 'row-head"><span class="' + NS + 'lang">词典</span></div>' +
+          '<div class="' + NS + 'text ' + NS + 'definition"><span class="' + NS + 'loading">正在查询释义…</span></div>';
+        bodyEl.appendChild(defRow);
+        const defContainer = defRow.querySelector('.' + NS + 'definition');
+        chrome.runtime.sendMessage({ type: 'DEFINE', word: text }, function (dres) {
+          if (chrome.runtime.lastError) {
+            defContainer.textContent = '查询失败：' + chrome.runtime.lastError.message;
+            return;
+          }
+          if (!dres || !dres.ok) {
+            defContainer.textContent = dres && dres.error ? ('查询失败：' + dres.error) : '查询失败';
+            return;
+          }
+          // render definition (escape then preserve newlines)
+          defContainer.innerHTML = escapeHtml(dres.text).replace(/\n/g, '<br>');
+        });
+      }
     });
   }
 
