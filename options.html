@@ -203,6 +203,25 @@
       </div>
     </div>
 
+    <div class="card">
+      <h2>朗读设置</h2>
+      <label class="field">
+        <span class="field-label">朗读声音</span>
+        <select id="ttsVoice"></select>
+        <span class="field-desc">在此处选择系统提供的语音。若留空将由浏览器自动选择最佳匹配。</span>
+      </label>
+      <div class="grid-2">
+        <label class="field">
+          <span class="field-label">语速（rate）</span>
+          <input type="number" id="ttsRate" min="0.5" max="2" step="0.05" value="1" />
+        </label>
+        <label class="field">
+          <span class="field-label">音调（pitch）</span>
+          <input type="number" id="ttsPitch" min="0.5" max="2" step="0.05" value="1" />
+        </label>
+      </div>
+    </div>
+
     <div class="actions">
       <button type="button" class="secondary" id="btnTest">测试连接</button>
       <button type="button" class="primary" id="btnSave">保存设置</button>

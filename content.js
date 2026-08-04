@@ -10,6 +10,7 @@
   let panel = null;
   let lastSelection = { text: "", rect: null };
   let speaking = null;
+  let ttsSettings = { ttsVoiceName: "", ttsRate: 1, ttsPitch: 1 };
   let dragState = null;
   let suppressNextClick = false;
 
@@ -20,6 +21,19 @@
   function getVoice(lang) {
     const voices = window.speechSynthesis.getVoices();
     const norm = (l) => String(l).replace("_", "-").toLowerCase();
+    // If user selected a specific voice name, prefer it
+    if (ttsSettings && ttsSettings.ttsVoiceName) {
+      const byName = voices.find((v) => v.name === ttsSettings.ttsVoiceName);
+      if (byName) return byName;
+    }
+    // prefer high-quality / neural voices by name hints
+    const qualityHints = ["neural", "wavenet", "google", "microsoft", "neural-speech", "samantha", "alloy"];
+    const findQuality = voices.find((v) => {
+      const n = String(v.name || "").toLowerCase();
+      return qualityHints.some((h) => n.includes(h));
+    });
+    if (findQuality) return findQuality;
+    // fallback to language match
     return (
       voices.find((v) => norm(v.lang) === norm(lang)) ||
       voices.find((v) => norm(v.lang).startsWith(norm(lang).split("-")[0])) ||
@@ -56,8 +70,13 @@
     u.lang = VOICE_LANG[lang] || "en-US";
     const voice = getVoice(u.lang);
     if (voice) u.voice = voice;
-    u.rate = 1;
-    u.pitch = 1;
+    // apply persisted TTS rate/pitch if available
+    try {
+      u.rate = (ttsSettings && ttsSettings.ttsRate) ? Number(ttsSettings.ttsRate) : 1;
+    } catch (e) { u.rate = 1; }
+    try {
+      u.pitch = (ttsSettings && ttsSettings.ttsPitch) ? Number(ttsSettings.ttsPitch) : 1;
+    } catch (e) { u.pitch = 1; }
     u.onend = function () {
       stopSpeech();
       if (window.speechSynthesis && typeof window.speechSynthesis.cancel === "function") {
@@ -427,5 +446,15 @@
   if (window.speechSynthesis) {
     window.speechSynthesis.getVoices();
     window.speechSynthesis.onvoiceschanged = function () { window.speechSynthesis.getVoices(); };
+    // load persisted TTS settings from storage
+    try {
+      chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, function (res) {
+        if (!chrome.runtime.lastError && res) {
+          ttsSettings.ttsVoiceName = res.ttsVoiceName || "";
+          ttsSettings.ttsRate = res.ttsRate != null ? res.ttsRate : 1;
+          ttsSettings.ttsPitch = res.ttsPitch != null ? res.ttsPitch : 1;
+        }
+      });
+    } catch (e) {}
   }
 })();

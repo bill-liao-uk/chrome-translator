@@ -27,6 +27,14 @@
     el.className = "status" + (kind ? " " + kind : "");
   }
 
+  function els_tts() {
+    return {
+      ttsVoice: () => document.getElementById("ttsVoice"),
+      ttsRate: () => document.getElementById("ttsRate"),
+      ttsPitch: () => document.getElementById("ttsPitch")
+    };
+  }
+
   function syncSections() {
     const backend = els.backend().value;
     els.secOllama().classList.toggle("hidden", backend !== "ollama");
@@ -43,7 +51,10 @@
       llamacppBaseUrl: els.llamacppBaseUrl().value.trim(),
       llamacppModel: els.llamacppModel().value.trim(),
       temperature: parseFloat(els.temperature().value),
-      maxTokens: parseInt(els.maxTokens().value, 10)
+      maxTokens: parseInt(els.maxTokens().value, 10),
+      ttsVoiceName: els_tts().ttsVoice().value || "",
+      ttsRate: parseFloat(els_tts().ttsRate().value) || 1,
+      ttsPitch: parseFloat(els_tts().ttsPitch().value) || 1
     };
   }
 
@@ -54,6 +65,19 @@
       opt.value = m;
       listEl.appendChild(opt);
     });
+  }
+
+  function fillVoiceSelect() {
+    const sel = els_tts().ttsVoice();
+    sel.textContent = "";
+    const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    const addOpt = (v) => {
+      const o = document.createElement("option");
+      o.value = v.name;
+      o.textContent = v.name + " — " + v.lang;
+      sel.appendChild(o);
+    };
+    voices.forEach(addOpt);
   }
 
   function load() {
@@ -70,6 +94,14 @@
       els.llamacppModel().value = s.llamacppModel || "";
       els.temperature().value = s.temperature != null ? s.temperature : 0.2;
       els.maxTokens().value = s.maxTokens != null ? s.maxTokens : 512;
+      // tts
+      try {
+        fillVoiceSelect();
+      } catch (e) {}
+      const sel = els_tts().ttsVoice();
+      if (s.ttsVoiceName) sel.value = s.ttsVoiceName;
+      els_tts().ttsRate().value = s.ttsRate != null ? s.ttsRate : 1;
+      els_tts().ttsPitch().value = s.ttsPitch != null ? s.ttsPitch : 1;
       syncSections();
     });
   }
@@ -126,6 +158,12 @@
   });
   document.getElementById("btnSave").addEventListener("click", save);
   document.getElementById("btnTest").addEventListener("click", test);
+
+  // populate voices when available
+  if (window.speechSynthesis) {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = function () { fillVoiceSelect(); };
+  }
 
   load();
 })();

@@ -5,7 +5,11 @@ const DEFAULT_SETTINGS = {
   llamacppBaseUrl: "http://localhost:8080",
   llamacppModel: "",
   temperature: 0.2,
-  maxTokens: 512
+  maxTokens: 512,
+  // TTS settings
+  ttsVoiceName: "",
+  ttsRate: 1,
+  ttsPitch: 1
 };
 
 function getSettings() {
