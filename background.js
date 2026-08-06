@@ -75,6 +75,22 @@ async function callOllama(settings, systemPrompt, userText) {
   return content.trim();
 }
 
+function cleanOutput(content) {
+  let s = String(content).trim();
+  const pairs = [
+    ['"', '"'],
+    ["'", "'"],
+    ["\u201C", "\u201D"],
+    ["\u2018", "\u2019"]
+  ];
+  for (const pair of pairs) {
+    if (s.length >= 2 && s[0] === pair[0] && s[s.length - 1] === pair[1]) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
 async function callLlamacpp(settings, systemPrompt, userText) {
   const url = settings.llamacppBaseUrl.replace(/\/+$/, "") + "/v1/chat/completions";
   const body = {
@@ -103,7 +119,7 @@ async function callLlamacpp(settings, systemPrompt, userText) {
   if (!content) {
     throw new Error("llama.cpp 返回内容为空，请检查模型是否正确。");
   }
-  return content.trim();
+  return cleanOutput(content);
 }
 
 async function translate(text, settings) {
@@ -116,7 +132,8 @@ async function translate(text, settings) {
   } else {
     translated = await callOllama(settings, systemPrompt, text);
   }
-  return { translated, source, target };
+  const actualTarget = detectLanguage(translated);
+  return { translated, source, target: actualTarget };
 }
 
 async function testConnection(settings) {

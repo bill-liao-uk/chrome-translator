@@ -246,10 +246,11 @@
       }
       targetEl.textContent = res.text;
       tgtBtn.disabled = false;
+      const tgtLang = detectLang(res.text);
       tgtBtn.addEventListener("click", function () {
-        if (speak(res.text, res.target)) this.classList.add(NS + "active");
+        if (speak(res.text, tgtLang)) this.classList.add(NS + "active");
       });
-      if (langLabel) langLabel.textContent = "译文（" + LANG_NAMES[res.target] + "）";
+      if (langLabel) langLabel.textContent = "译文（" + LANG_NAMES[tgtLang] + "）";
       if (statusEl) statusEl.textContent = "由本地模型完成";
 
       // If the user selected a single word/phrase (no whitespace), show detailed definition
