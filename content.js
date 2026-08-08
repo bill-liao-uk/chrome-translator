@@ -8,11 +8,13 @@
 
   let icon = null;
   let panel = null;
-  let lastSelection = { text: "", rect: null };
+  let lastSelection = { text: "", rect: null, t: 0 };
   let speaking = null;
   let ttsSettings = { ttsVoiceName: "", ttsRate: 1, ttsPitch: 1 };
   let dragState = null;
   let suppressNextClick = false;
+  let mouseDownAt = null;
+  const SELECTION_GRACE_MS = 600;
 
   function detectLang(text) {
     return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text) ? "zh" : "en";
@@ -102,26 +104,19 @@
     return true;
   }
 
-  function currentText() {
+  function captureSelection() {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.toString()) return "";
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !sel.toString()) return null;
     const node = sel.anchorNode;
-    if (node && node.nodeType === Node.ELEMENT_NODE && node.closest("." + NS + "panel,." + NS + "icon-btn")) {
-      return "";
-    }
-    if (node && node.parentNode && node.parentNode.closest && node.parentNode.closest("." + NS + "panel,." + NS + "icon-btn")) {
-      return "";
-    }
-    return sel.toString().trim();
-  }
-
-  function selectionRect() {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    if (node && node.nodeType === Node.ELEMENT_NODE && node.closest("." + NS + "panel,." + NS + "icon-btn")) return null;
+    if (node && node.parentNode && node.parentNode.closest && node.parentNode.closest("." + NS + "panel,." + NS + "icon-btn")) return null;
     const r = sel.getRangeAt(0);
     const rect = r.getBoundingClientRect();
-    if (rect && (rect.width > 0 || rect.height > 0)) return rect;
-    return null;
+    if (!rect || (rect.width <= 0 && rect.height <= 0)) return null;
+    return {
+      text: sel.toString().trim().slice(0, MAX_TEXT),
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    };
   }
 
   function scheduleSelectionUpdate() {
@@ -130,11 +125,17 @@
 
   function updateSelectionUI() {
     if (panel) return;
-    const text = currentText();
-    const rect = selectionRect();
-    if (text && rect) {
-      lastSelection = { text: text.slice(0, MAX_TEXT), rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } };
-      showIcon(rect);
+    const captured = captureSelection();
+    if (captured) {
+      captured.t = Date.now();
+      lastSelection = captured;
+      showIcon(captured.rect);
+      return;
+    }
+    // The site may have cleared the selection right after mouseup (e.g. LinkedIn),
+    // so keep the icon while the last captured selection is still fresh.
+    if (lastSelection && lastSelection.text && lastSelection.t && Date.now() - lastSelection.t <= SELECTION_GRACE_MS) {
+      showIcon(lastSelection.rect);
     } else {
       hideIcon();
     }
@@ -405,9 +406,43 @@
     });
   }
 
+  function onMouseDown(e) {
+    if (e.button !== 0) return;
+    mouseDownAt = { x: e.clientX, y: e.clientY };
+  }
+
   function onMouseUp(e) {
-    if (e.target instanceof Element && e.target.closest("." + NS + "icon-btn,." + NS + "panel")) return;
-    scheduleSelectionUpdate();
+    if (e.target instanceof Element && e.target.closest("." + NS + "icon-btn,." + NS + "panel")) {
+      mouseDownAt = null;
+      return;
+    }
+    const down = mouseDownAt;
+    mouseDownAt = null;
+    const captured = captureSelection();
+    if (captured) {
+      captured.t = Date.now();
+      lastSelection = captured;
+      scheduleSelectionUpdate();
+      return;
+    }
+    if (down && Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y) < 5) {
+      // A plain click that just collapsed the selection -> hide immediately.
+      lastSelection = { text: "", rect: null, t: 0 };
+      hideIcon();
+    } else {
+      scheduleSelectionUpdate();
+    }
+  }
+
+  function onSelectionChange() {
+    // Skip while a mouse drag is in progress; the selection is captured on mouseup.
+    if (mouseDownAt) return;
+    const captured = captureSelection();
+    if (captured) {
+      captured.t = Date.now();
+      lastSelection = captured;
+      scheduleSelectionUpdate();
+    }
   }
 
   function onKeyUp(e) {
@@ -459,7 +494,9 @@
     }
   }
 
+  document.addEventListener("mousedown", onMouseDown, true);
   document.addEventListener("mouseup", onMouseUp, true);
+  document.addEventListener("selectionchange", onSelectionChange, true);
   document.addEventListener("keyup", onKeyUp, true);
   document.addEventListener("click", onClick, true);
   window.addEventListener("scroll", onScroll, true);
