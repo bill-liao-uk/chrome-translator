@@ -219,11 +219,6 @@
   gap: 8px;
   margin-bottom: 2px;
 }
-.ct-para-lang {
-  font-size: 11px;
-  color: #86909c;
-  font-weight: 600;
-}
 .ct-para-retry {
   all: unset;
   font-size: 11px;

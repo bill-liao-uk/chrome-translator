@@ -623,21 +623,18 @@
     node.className = NS + "para";
     const head = document.createElement("div");
     head.className = NS + "para-head";
-    const label = document.createElement("span");
-    label.className = NS + "para-lang";
-    label.textContent = "译文（" + LANG_NAMES[item.srcLang === "zh" ? "en" : "zh"] + "）";
     const retry = document.createElement("button");
     retry.type = "button";
     retry.className = NS + "para-retry";
     retry.textContent = "重试";
     retry.style.display = "none";
+    retry.style.marginLeft = "auto";
     retry.addEventListener("click", function () {
       retry.style.display = "none";
       item.textEl.className = NS + "para-text " + NS + "loading";
       item.textEl.textContent = "翻译中…";
       pageWorker([item], pageState.progress || { done: 0, total: 1 });
     });
-    head.appendChild(label);
     head.appendChild(retry);
     const textEl = document.createElement("div");
     textEl.className = NS + "para-text " + NS + "loading";
