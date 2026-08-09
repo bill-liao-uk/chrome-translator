@@ -169,3 +169,81 @@
   font-size: 11px;
   color: #86909c;
 }
+
+.ct-page-btn {
+  all: unset;
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 16px;
+  background: #2f6bff;
+  color: #fff;
+  font: 600 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ct-page-btn:hover {
+  background: #1f56d9;
+}
+.ct-page-btn.ct-active {
+  background: #f53f3f;
+}
+.ct-page-btn.ct-active:hover {
+  background: #d4380d;
+}
+
+.ct-para {
+  box-sizing: border-box;
+  margin: 6px 0;
+  padding: 6px 10px;
+  background: #f5f8ff;
+  border-left: 3px solid #2f6bff;
+  border-radius: 4px;
+  font: 13px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+  color: #1f2329;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ct-para-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.ct-para-lang {
+  font-size: 11px;
+  color: #86909c;
+  font-weight: 600;
+}
+.ct-para-retry {
+  all: unset;
+  font-size: 11px;
+  color: #2f6bff;
+  cursor: pointer;
+  border: 1px solid #c9cdd4;
+  border-radius: 10px;
+  padding: 0 8px;
+  background: #fff;
+  line-height: 1.6;
+}
+.ct-para-retry:hover {
+  border-color: #2f6bff;
+}
+.ct-para-text {
+  font-size: 13px;
+}
+.ct-para-text.ct-loading {
+  color: #86909c;
+}
+.ct-para-text.ct-error {
+  color: #f53f3f;
+}

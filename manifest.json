@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "划线翻译",
   "version": "1.0.0",
-  "description": "选中文本划线即可翻译：英文→中文 / 中文→英文。支持 Ollama 与 llama.cpp 本地模型翻译，可朗读原文与译文。",
+  "description": "选中文本划线即可翻译：英文→中文 / 中文→英文。支持整页段落对照翻译，每段原文下方显示译文。支持 Ollama 与 llama.cpp 本地模型翻译，可朗读原文与译文。",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {

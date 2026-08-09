@@ -5,6 +5,9 @@
   const LANG_NAMES = { zh: "中文", en: "英文" };
   const VOICE_LANG = { zh: "zh-CN", en: "en-US" };
   const MAX_TEXT = 3000;
+  const PAGE_BUTTON_LABEL = "对照翻译";
+  const PAGE_LIMIT = 300;
+  const PARA_CONCURRENCY = 3;
 
   let icon = null;
   let panel = null;
@@ -14,6 +17,8 @@
   let dragState = null;
   let suppressNextClick = false;
   let mouseDownAt = null;
+  let pageBtn = null;
+  let pageState = { active: false, progress: null };
   const SELECTION_GRACE_MS = 600;
 
   function detectLang(text) {
@@ -482,8 +487,234 @@
     else if (icon && icon.style.display === "block" && lastSelection.rect) showIcon(lastSelection.rect);
   }
 
+  function isElementVisible(el) {
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isPageUi(el) {
+    return !!(el.closest && el.closest("." + NS + "panel,." + NS + "icon-btn,." + NS + "page-btn,." + NS + "para"));
+  }
+
+  function isSkippable(el) {
+    if (isPageUi(el)) return true;
+    if (el.closest("script,style,noscript,template,svg,iframe,select,textarea,button")) return true;
+    if (el.isContentEditable) return true;
+    if (el.getAttribute && el.getAttribute("aria-hidden") === "true") return true;
+    if (!isElementVisible(el)) return true;
+    return false;
+  }
+
+  function isParagraphLike(el) {
+    const text = (el.innerText || "").trim();
+    if (text.length < 2) return false;
+    if (!/[\u4e00-\u9fffA-Za-z]/.test(text)) return false;
+    for (const child of el.children) {
+      if (child.matches("p,div,section,article,ul,ol,table,blockquote,h1,h2,h3,h4,h5,h6,pre,li,td,th,form,figure,header,footer,nav,aside")) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function collectParagraphs() {
+    const seen = [];
+    const seenSet = new Set();
+    const add = function (el) {
+      if (isSkippable(el)) return;
+      let p = el.parentElement;
+      while (p && p !== document.body) {
+        if (seenSet.has(p)) return;
+        p = p.parentElement;
+      }
+      const text = (el.innerText || "").trim();
+      if (!text || text.length < 2) return;
+      if (!/[\u4e00-\u9fffA-Za-z]/.test(text)) return;
+      seenSet.add(el);
+      seen.push({ el: el, text: text.slice(0, MAX_TEXT * 10), srcLang: detectLang(text) });
+    };
+    document.querySelectorAll("p,li,blockquote,h1,h2,h3,h4,h5,h6,td,th,dd,figcaption").forEach(add);
+    document.querySelectorAll("div,section,article").forEach(function (el) {
+      if (isParagraphLike(el)) add(el);
+    });
+    seen.sort(function (a, b) {
+      const pos = a.el.compareDocumentPosition(b.el);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    return seen.slice(0, PAGE_LIMIT);
+  }
+
+  function chunkText(text, maxLen) {
+    const t = String(text).replace(/\s+/g, " ").trim();
+    if (t.length <= maxLen) return [t];
+    const chunks = [];
+    let cur = "";
+    const sentences = t.split(/(?<=[.!?。！？；;])\s+|\n+/);
+    for (const s of sentences) {
+      if (!s) continue;
+      const next = cur ? cur + " " + s : s;
+      if (next.length <= maxLen) {
+        cur = next;
+      } else {
+        if (cur) chunks.push(cur.trim());
+        cur = s;
+        while (cur.length > maxLen) {
+          chunks.push(cur.slice(0, maxLen).trim());
+          cur = cur.slice(maxLen);
+        }
+      }
+    }
+    if (cur) chunks.push(cur.trim());
+    return chunks;
+  }
+
+  function sendTranslate(text) {
+    return new Promise(function (resolve, reject) {
+      chrome.runtime.sendMessage({ type: "TRANSLATE", text: text }, function (res) {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!res || !res.ok) {
+          reject(new Error((res && res.error) || "翻译失败"));
+          return;
+        }
+        resolve(res.text);
+      });
+    });
+  }
+
+  async function pageWorker(queue, progress) {
+    while (queue.length) {
+      const item = queue.shift();
+      const chunks = chunkText(item.text, MAX_TEXT);
+      let translated = "";
+      let err = null;
+      for (const chunk of chunks) {
+        try {
+          const t = await sendTranslate(chunk);
+          translated += (translated ? " " : "") + t;
+        } catch (e) {
+          err = (e && e.message) || String(e);
+          break;
+        }
+      }
+      if (item.node && item.node.isConnected) {
+        if (err) {
+          item.textEl.className = NS + "para-text " + NS + "error";
+          item.textEl.textContent = "翻译失败：" + err;
+          if (item.retry) item.retry.style.display = "";
+        } else {
+          item.textEl.className = NS + "para-text";
+          item.textEl.textContent = translated;
+        }
+      }
+      progress.done++;
+      updatePageBtn();
+    }
+  }
+
+  function createParaNode(item) {
+    const node = document.createElement("div");
+    node.className = NS + "para";
+    const head = document.createElement("div");
+    head.className = NS + "para-head";
+    const label = document.createElement("span");
+    label.className = NS + "para-lang";
+    label.textContent = "译文（" + LANG_NAMES[item.srcLang === "zh" ? "en" : "zh"] + "）";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = NS + "para-retry";
+    retry.textContent = "重试";
+    retry.style.display = "none";
+    retry.addEventListener("click", function () {
+      retry.style.display = "none";
+      item.textEl.className = NS + "para-text " + NS + "loading";
+      item.textEl.textContent = "翻译中…";
+      pageWorker([item], pageState.progress || { done: 0, total: 1 });
+    });
+    head.appendChild(label);
+    head.appendChild(retry);
+    const textEl = document.createElement("div");
+    textEl.className = NS + "para-text " + NS + "loading";
+    textEl.textContent = "翻译中…";
+    node.appendChild(head);
+    node.appendChild(textEl);
+    item.node = node;
+    item.textEl = textEl;
+    item.retry = retry;
+    item.el.insertAdjacentElement("afterend", node);
+  }
+
+  function updatePageBtn() {
+    if (!pageBtn || !pageState.active) return;
+    const p = pageState.progress;
+    const done = p ? p.done : 0;
+    const total = p ? p.total : 0;
+    pageBtn.textContent = "退出对照（" + Math.min(done, total) + "/" + total + "）";
+  }
+
+  function removePageNodes() {
+    document.querySelectorAll("." + NS + "para").forEach(function (n) {
+      n.remove();
+    });
+  }
+
+  function startPageTranslation() {
+    if (pageState.active) return;
+    removePageNodes();
+    const paras = collectParagraphs();
+    if (!paras.length) {
+      if (pageBtn) pageBtn.textContent = "未找到可翻译段落";
+      setTimeout(function () {
+        if (pageBtn && !pageState.active) pageBtn.textContent = PAGE_BUTTON_LABEL;
+      }, 1500);
+      return;
+    }
+    pageState.active = true;
+    pageState.progress = { done: 0, total: paras.length };
+    pageBtn.classList.add(NS + "active");
+    paras.forEach(createParaNode);
+    const queue = paras.slice();
+    const workers = Math.min(PARA_CONCURRENCY, queue.length);
+    for (let i = 0; i < workers; i++) {
+      pageWorker(queue, pageState.progress);
+    }
+    updatePageBtn();
+  }
+
+  function stopPageTranslation() {
+    pageState.active = false;
+    pageState.progress = null;
+    removePageNodes();
+    if (pageBtn) {
+      pageBtn.textContent = PAGE_BUTTON_LABEL;
+      pageBtn.classList.remove(NS + "active");
+    }
+  }
+
+  function onPageBtnClick() {
+    if (pageState.active) stopPageTranslation();
+    else startPageTranslation();
+  }
+
+  function createPageBtn() {
+    pageBtn = document.createElement("button");
+    pageBtn.type = "button";
+    pageBtn.className = NS + "page-btn";
+    pageBtn.title = "对当前网页进行段落对照翻译";
+    pageBtn.textContent = PAGE_BUTTON_LABEL;
+    pageBtn.addEventListener("click", onPageBtnClick);
+    document.documentElement.appendChild(pageBtn);
+  }
+
   function cleanup() {
     stopSpeech();
+    stopPageTranslation();
     if (panel) {
       panel.remove();
       panel = null;
@@ -491,6 +722,10 @@
     if (icon) {
       icon.remove();
       icon = null;
+    }
+    if (pageBtn) {
+      pageBtn.remove();
+      pageBtn = null;
     }
   }
 
@@ -505,6 +740,8 @@
   document.addEventListener("pointerup", onHeadPointerUp);
   window.addEventListener("pagehide", cleanup);
   window.addEventListener("beforeunload", cleanup);
+
+  createPageBtn();
 
   if (window.speechSynthesis) {
     window.speechSynthesis.getVoices();

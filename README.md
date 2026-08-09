@@ -6,6 +6,7 @@ A lightweight Chrome extension for translating selected text between English and
 
 - Translate selected text with a floating toolbar
 - Supports English ↔ Chinese translation
+- Translate the whole current page paragraph by paragraph, showing each paragraph's translation below the original
 - Uses local Ollama or llama.cpp models for translation
 - Reads original text and translated text aloud using browser TTS
 - Shows detailed definitions and example sentences for single-word selections
@@ -48,6 +49,13 @@ A lightweight Chrome extension for translating selected text between English and
    - translation
    - buttons for reading source and target text aloud
 4. If the selection is a single word, the panel will also show a detailed definition with example sentences.
+
+### Translate the whole page
+
+1. Click the floating `对照翻译` button (top-right corner of the page).
+2. The extension collects the page's paragraphs and inserts a translation block below each one, translating a few paragraphs at a time.
+3. The button shows progress (e.g. `退出对照（12/40）`).
+4. Click the button again (or the `重试` button on a failed paragraph) to stop/retry. Stopping removes all injected translations.
 
 ## Notes
 
