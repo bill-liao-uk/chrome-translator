@@ -607,15 +607,43 @@
         if (err) {
           item.textEl.className = NS + "para-text " + NS + "error";
           item.textEl.textContent = "翻译失败：" + err;
+          if (item.tgtBtn) {
+            item.textEl.prepend(item.tgtBtn);
+            item.tgtBtn.disabled = true;
+          }
           if (item.retry) item.retry.style.display = "";
         } else {
           item.textEl.className = NS + "para-text";
           item.textEl.textContent = translated;
+          if (item.tgtBtn) {
+            item.textEl.prepend(item.tgtBtn);
+            item.tgtBtn.disabled = false;
+          }
+          item.tgtText = translated.slice(0, MAX_TEXT);
         }
       }
       progress.done++;
       updatePageBtn();
     }
+  }
+
+  function createSpeakBtn(title, disabled, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = NS + "para-speak";
+    btn.title = title;
+    btn.disabled = !!disabled;
+    btn.innerHTML =
+      '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">' +
+      '<path d="M4 2.7v10.6c0 .9 1 1.4 1.7.9l8-5.3c.7-.5.7-1.5 0-2l-8-5.3C5 1 4 1.6 4 2.7z"/></svg>';
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function clearParaSpeakActive() {
+    document.querySelectorAll("." + NS + "para-speak.ct-active").forEach(function (b) {
+      b.classList.remove(NS + "active");
+    });
   }
 
   function createParaNode(item) {
@@ -633,6 +661,9 @@
       retry.style.display = "none";
       item.textEl.className = NS + "para-text " + NS + "loading";
       item.textEl.textContent = "翻译中…";
+      if (item.tgtBtn) item.textEl.prepend(item.tgtBtn);
+      item.tgtBtn.disabled = true;
+      item.tgtText = "";
       pageWorker([item], pageState.progress || { done: 0, total: 1 });
     });
     head.appendChild(retry);
@@ -644,6 +675,24 @@
     item.node = node;
     item.textEl = textEl;
     item.retry = retry;
+
+    const srcBtn = createSpeakBtn("朗读原文", false, function () {
+      clearParaSpeakActive();
+      if (speak(item.text.slice(0, MAX_TEXT), item.srcLang)) srcBtn.classList.add(NS + "active");
+      else srcBtn.classList.remove(NS + "active");
+    });
+    item.srcBtn = srcBtn;
+    if (item.el && item.el.prepend) item.el.prepend(srcBtn);
+
+    const tgtBtn = createSpeakBtn("朗读译文", true, function () {
+      if (!item.tgtText) return;
+      clearParaSpeakActive();
+      if (speak(item.tgtText, detectLang(item.tgtText))) tgtBtn.classList.add(NS + "active");
+      else tgtBtn.classList.remove(NS + "active");
+    });
+    item.tgtBtn = tgtBtn;
+    textEl.prepend(tgtBtn);
+
     item.el.insertAdjacentElement("afterend", node);
   }
 
@@ -657,6 +706,9 @@
 
   function removePageNodes() {
     document.querySelectorAll("." + NS + "para").forEach(function (n) {
+      n.remove();
+    });
+    document.querySelectorAll("." + NS + "para-speak").forEach(function (n) {
       n.remove();
     });
   }

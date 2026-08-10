@@ -234,6 +234,34 @@
 .ct-para-retry:hover {
   border-color: #2f6bff;
 }
+.ct-para-speak {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #eef3ff;
+  color: #2f6bff;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 0;
+}
+.ct-para-speak:hover {
+  background: #2f6bff;
+  color: #fff;
+}
+.ct-para-speak:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ct-para-speak.ct-active {
+  background: #2f6bff;
+  color: #fff;
+}
 .ct-para-text {
   font-size: 13px;
 }
