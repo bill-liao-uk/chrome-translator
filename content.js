@@ -317,7 +317,7 @@
 
   function positionPanel(rect) {
     const margin = 8;
-    const w = Math.min(360, window.innerWidth - margin * 2);
+    const w = Math.min(480, window.innerWidth - margin * 2);
     const maxH = window.innerHeight - margin * 2;
     panel.style.width = w + "px";
     panel.style.maxHeight = maxH + "px";
