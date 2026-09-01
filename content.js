@@ -258,6 +258,7 @@
       });
       if (langLabel) langLabel.textContent = "译文（" + LANG_NAMES[tgtLang] + "）";
       if (statusEl) statusEl.textContent = "由本地模型完成";
+      repositionPanel();
 
       // If the user selected a single word/phrase (no whitespace), show detailed definition
       const isSingleWord = typeof text === "string" && !/\s/.test(text) && text.length > 0 && text.length <= 64;
@@ -269,18 +270,22 @@
           '<div class="' + NS + 'row-head"><span class="' + NS + 'lang">词典</span></div>' +
           '<div class="' + NS + 'text ' + NS + 'definition"><span class="' + NS + 'loading">正在查询释义…</span></div>';
         bodyEl.appendChild(defRow);
+        repositionPanel();
         const defContainer = defRow.querySelector('.' + NS + 'definition');
         chrome.runtime.sendMessage({ type: 'DEFINE', word: text }, function (dres) {
           if (chrome.runtime.lastError) {
             defContainer.textContent = '查询失败：' + chrome.runtime.lastError.message;
+            repositionPanel();
             return;
           }
           if (!dres || !dres.ok) {
             defContainer.textContent = dres && dres.error ? ('查询失败：' + dres.error) : '查询失败';
+            repositionPanel();
             return;
           }
           // render definition (escape then preserve newlines)
           defContainer.innerHTML = escapeHtml(dres.text).replace(/\n/g, '<br>');
+          repositionPanel();
         });
       }
     });
@@ -323,6 +328,25 @@
     const estH = Math.min(panel.scrollHeight || 260, maxH);
     if (y + estH > window.innerHeight - margin) {
       y = rect.top - estH - 6;
+      if (y < margin) y = margin;
+    }
+    panel.style.left = x + "px";
+    panel.style.top = y + "px";
+  }
+
+  function repositionPanel() {
+    if (!panel || !lastSelection.rect) return;
+    const rect = lastSelection.rect;
+    const margin = 8;
+    const maxH = window.innerHeight - margin * 2;
+    panel.style.maxHeight = maxH + "px";
+    const panelRect = panel.getBoundingClientRect();
+    const w = window.innerWidth - margin * 2 < panelRect.width ? window.innerWidth - margin * 2 : panelRect.width;
+    const h = Math.min(panelRect.height, maxH);
+    const x = Math.min(Math.max(rect.left, margin), window.innerWidth - w - margin);
+    let y = rect.bottom + 6;
+    if (y + h > window.innerHeight - margin) {
+      y = rect.top - h - 6;
       if (y < margin) y = margin;
     }
     panel.style.left = x + "px";
@@ -483,7 +507,7 @@
   }
 
   function onResize() {
-    if (panel && lastSelection.rect) positionPanel(lastSelection.rect);
+    if (panel && lastSelection.rect) repositionPanel();
     else if (icon && icon.style.display === "block" && lastSelection.rect) showIcon(lastSelection.rect);
   }
 
