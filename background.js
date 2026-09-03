@@ -193,24 +193,34 @@ function ttsStop() {
 
 function ttsPickVoice(voices, lang, ttsSettings) {
   const norm = (l) => String(l).replace("_", "-").toLowerCase();
+  const langMatches = (v) => {
+    if (!v.lang) return false;
+    const l = norm(v.lang);
+    const base = norm(lang).split("-")[0];
+    return l === norm(lang) || l.split("-")[0] === base;
+  };
+  const qualityHints = ["supertonic", "neural", "wavenet", "google", "microsoft", "neural-speech", "samantha", "alloy"];
+  const isQuality = (v) => {
+    const n = String(v.voiceName || "").toLowerCase();
+    return qualityHints.some((h) => n.includes(h));
+  };
   // 1) user-selected voice by exact name
   if (ttsSettings && ttsSettings.ttsVoiceName) {
     const byName = voices.find((v) => v.voiceName === ttsSettings.ttsVoiceName);
     if (byName) return byName;
   }
-  // 2) prefer high-quality / neural voices by name hints
-  const qualityHints = ["supertonic", "neural", "wavenet", "google", "microsoft", "neural-speech", "samantha", "alloy"];
-  const findQuality = voices.find((v) => {
-    const n = String(v.voiceName || "").toLowerCase();
-    return qualityHints.some((h) => n.includes(h));
-  });
+  // 2) prefer high-quality / neural voices, but ONLY if they speak the requested language,
+  //    so that (e.g.) an English word is not pronounced by a Chinese voice.
+  const findQualityLang = voices.find((v) => isQuality(v) && langMatches(v));
+  if (findQualityLang) return findQualityLang;
+  // 3) fallback to any voice of the requested language
+  const langVoice = voices.find((v) => norm(v.lang) === norm(lang)) ||
+    voices.find((v) => norm(v.lang).split("-")[0] === norm(lang).split("-")[0]);
+  if (langVoice) return langVoice;
+  // 4) last resort: any quality voice (language-agnostic)
+  const findQuality = voices.find(isQuality);
   if (findQuality) return findQuality;
-  // 3) fallback to language match
-  return (
-    voices.find((v) => norm(v.lang) === norm(lang)) ||
-    voices.find((v) => norm(v.lang).startsWith(norm(lang).split("-")[0])) ||
-    null
-  );
+  return null;
 }
 
 chrome.action.onClicked.addListener(() => {
