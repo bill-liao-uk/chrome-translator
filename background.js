@@ -157,6 +157,62 @@ async function testConnection(settings) {
   return { models };
 }
 
+function ttsGetVoices() {
+  return new Promise((resolve) => {
+    if (!chrome.tts || typeof chrome.tts.getVoices !== "function") {
+      resolve([]);
+      return;
+    }
+    chrome.tts.getVoices((voices) => {
+      resolve(voices || []);
+    });
+  });
+}
+
+function ttsSpeak(text, options) {
+  return new Promise((resolve) => {
+    if (!chrome.tts || typeof chrome.tts.speak !== "function") {
+      resolve({ ok: false, error: "浏览器不支持 chrome.tts" });
+      return;
+    }
+    chrome.tts.speak(text, options, () => {
+      resolve(!!chrome.runtime.lastError
+        ? { ok: false, error: chrome.runtime.lastError.message }
+        : { ok: true });
+    });
+  });
+}
+
+function ttsStop() {
+  try {
+    if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
+  } catch (e) {
+    // ignore
+  }
+}
+
+function ttsPickVoice(voices, lang, ttsSettings) {
+  const norm = (l) => String(l).replace("_", "-").toLowerCase();
+  // 1) user-selected voice by exact name
+  if (ttsSettings && ttsSettings.ttsVoiceName) {
+    const byName = voices.find((v) => v.voiceName === ttsSettings.ttsVoiceName);
+    if (byName) return byName;
+  }
+  // 2) prefer high-quality / neural voices by name hints
+  const qualityHints = ["supertonic", "neural", "wavenet", "google", "microsoft", "neural-speech", "samantha", "alloy"];
+  const findQuality = voices.find((v) => {
+    const n = String(v.voiceName || "").toLowerCase();
+    return qualityHints.some((h) => n.includes(h));
+  });
+  if (findQuality) return findQuality;
+  // 3) fallback to language match
+  return (
+    voices.find((v) => norm(v.lang) === norm(lang)) ||
+    voices.find((v) => norm(v.lang).startsWith(norm(lang).split("-")[0])) ||
+    null
+  );
+}
+
 chrome.action.onClicked.addListener(() => {
   chrome.runtime.openOptionsPage();
 });
@@ -198,6 +254,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const result = await testConnection(settings);
           sendResponse({ ok: true, models: result.models });
         }
+        break;
+      case "TTS_GET_VOICES":
+        {
+          const voices = await ttsGetVoices();
+          sendResponse({
+            ok: true,
+            voices: voices.map((v) => ({ voiceName: v.voiceName, lang: v.lang || "" }))
+          });
+        }
+        break;
+      case "TTS_SPEAK":
+        {
+          const settings = await getSettings();
+          const voices = await ttsGetVoices();
+          const lang = String(msg.lang || "en-US");
+          const voice = ttsPickVoice(voices, lang, settings);
+          const tabId = sender && sender.tab ? sender.tab.id : null;
+          const textKey = String(msg.text || "");
+          const options = {
+            lang: lang,
+            rate: Number(msg.rate != null ? msg.rate : settings.ttsRate) || 1,
+            pitch: Number(msg.pitch != null ? msg.pitch : settings.ttsPitch) || 1,
+            onEvent: function (event) {
+              if (event && (event.type === "end" || event.type === "interrupted" || event.type === "cancelled" || event.type === "error")) {
+                if (tabId != null && textKey) {
+                  try {
+                    chrome.tabs.sendMessage(tabId, { type: "TTS_END", text: textKey }, function () {
+                      if (chrome.runtime.lastError) { /* 接收方可能已存在或无监听，忽略 */ }
+                    });
+                  } catch (e) {
+                    // ignore
+                  }
+                }
+              }
+            }
+          };
+          if (voice) options.voiceName = voice.voiceName;
+          const res = await ttsSpeak(String(textKey || ""), options);
+          sendResponse(res);
+        }
+        break;
+      case "TTS_STOP":
+        ttsStop();
+        sendResponse({ ok: true });
         break;
       default:
         sendResponse({ ok: false, error: "未知消息类型" });

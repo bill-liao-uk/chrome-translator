@@ -13,7 +13,49 @@
   let panel = null;
   let lastSelection = { text: "", rect: null, t: 0 };
   let speaking = null;
-  let ttsSettings = { ttsVoiceName: "", ttsRate: 1, ttsPitch: 1 };
+
+  function stopSpeech() {
+    try {
+      chrome.runtime.sendMessage({ type: "TTS_STOP" });
+    } catch (e) {
+      // ignore
+    }
+    speaking = null;
+  }
+
+  function speak(text, lang) {
+    // if the same text is already playing, toggle off
+    if (speaking && speaking._ctText === text) {
+      stopSpeech();
+      return false;
+    }
+    stopSpeech();
+    const u = { _ctText: text };
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "TTS_SPEAK",
+          text: String(text).slice(0, MAX_TEXT),
+          lang: VOICE_LANG[lang] || "en-US"
+        },
+        function (res) {
+          if (chrome.runtime.lastError) {
+            speaking = null;
+            return;
+          }
+          if (res && !res.ok) {
+            speaking = null;
+          }
+        }
+      );
+    } catch (e) {
+      speaking = null;
+      return false;
+    }
+    speaking = u;
+    return true;
+  }
+
   let dragState = null;
   let suppressNextClick = false;
   let mouseDownAt = null;
@@ -23,90 +65,6 @@
 
   function detectLang(text) {
     return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text) ? "zh" : "en";
-  }
-
-  function getVoice(lang) {
-    const voices = window.speechSynthesis.getVoices();
-    const norm = (l) => String(l).replace("_", "-").toLowerCase();
-    // If user selected a specific voice name, prefer it
-    if (ttsSettings && ttsSettings.ttsVoiceName) {
-      const byName = voices.find((v) => v.name === ttsSettings.ttsVoiceName);
-      if (byName) return byName;
-    }
-    // prefer high-quality / neural voices by name hints
-    const qualityHints = ["neural", "wavenet", "google", "microsoft", "neural-speech", "samantha", "alloy"];
-    const findQuality = voices.find((v) => {
-      const n = String(v.name || "").toLowerCase();
-      return qualityHints.some((h) => n.includes(h));
-    });
-    if (findQuality) return findQuality;
-    // fallback to language match
-    return (
-      voices.find((v) => norm(v.lang) === norm(lang)) ||
-      voices.find((v) => norm(v.lang).startsWith(norm(lang).split("-")[0])) ||
-      null
-    );
-  }
-
-  function stopSpeech() {
-    const synth = window.speechSynthesis;
-    if (synth) {
-      try {
-        if (typeof synth.pause === "function") synth.pause();
-      } catch (err) {
-        // ignore
-      }
-      try {
-        if (typeof synth.cancel === "function") synth.cancel();
-      } catch (err) {
-        // ignore
-      }
-    }
-    speaking = null;
-  }
-
-  function speak(text, lang) {
-    const synth = window.speechSynthesis;
-    if (speaking && synth && synth.speaking && speaking._ctText === text) {
-      stopSpeech();
-      return false;
-    }
-    stopSpeech();
-    const u = new SpeechSynthesisUtterance(text);
-    u._ctText = text;
-    u.lang = VOICE_LANG[lang] || "en-US";
-    const voice = getVoice(u.lang);
-    if (voice) u.voice = voice;
-    // apply persisted TTS rate/pitch if available
-    try {
-      u.rate = (ttsSettings && ttsSettings.ttsRate) ? Number(ttsSettings.ttsRate) : 1;
-    } catch (e) { u.rate = 1; }
-    try {
-      u.pitch = (ttsSettings && ttsSettings.ttsPitch) ? Number(ttsSettings.ttsPitch) : 1;
-    } catch (e) { u.pitch = 1; }
-    u.onend = function () {
-      stopSpeech();
-      if (window.speechSynthesis && typeof window.speechSynthesis.cancel === "function") {
-        try {
-          window.speechSynthesis.cancel();
-        } catch (err) {
-          // ignore
-        }
-      }
-    };
-    u.onerror = function () {
-      stopSpeech();
-      if (window.speechSynthesis && typeof window.speechSynthesis.cancel === "function") {
-        try {
-          window.speechSynthesis.cancel();
-        } catch (err) {
-          // ignore
-        }
-      }
-    };
-    synth.speak(u);
-    speaking = u;
-    return true;
   }
 
   function captureSelection() {
@@ -814,20 +772,14 @@
   window.addEventListener("pagehide", cleanup);
   window.addEventListener("beforeunload", cleanup);
 
-  createPageBtn();
-
-  if (window.speechSynthesis) {
-    window.speechSynthesis.getVoices();
-    window.speechSynthesis.onvoiceschanged = function () { window.speechSynthesis.getVoices(); };
-    // load persisted TTS settings from storage
-    try {
-      chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, function (res) {
-        if (!chrome.runtime.lastError && res) {
-          ttsSettings.ttsVoiceName = res.ttsVoiceName || "";
-          ttsSettings.ttsRate = res.ttsRate != null ? res.ttsRate : 1;
-          ttsSettings.ttsPitch = res.ttsPitch != null ? res.ttsPitch : 1;
-        }
+  chrome.runtime.onMessage.addListener(function (msg) {
+    if (msg && msg.type === "TTS_END") {
+      speaking = null;
+      document.querySelectorAll("." + NS + "active").forEach(function (b) {
+        b.classList.remove(NS + "active");
       });
-    } catch (e) {}
-  }
+    }
+  });
+
+  createPageBtn();
 })();

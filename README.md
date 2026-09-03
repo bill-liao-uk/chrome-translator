@@ -34,6 +34,18 @@ A lightweight Chrome extension for translating selected text between English and
 - In the options page, select a voice from the `朗读声音` dropdown.
 - Adjust `语速（rate）` and `音调（pitch）` for more natural playback.
 - Click `保存设置` to store your preferences.
+- The dropdown lists all voices available via Chrome's TTS engine (`chrome.tts`), including browser system voices and voices registered by third-party extensions.
+
+#### Using Supertonic voices (high-quality neural voices)
+
+To be able to select high-quality Supertonic voices (e.g. `Supertonic M3`) in this extension:
+
+1. Install the standalone **Supertonic Text-to-Speech Voices** Chrome extension:
+   `https://chromewebstore.google.com/detail/supertonic-text-to-speech/mdoplmghlkjcnegkdhocjbjcncocbdhk`
+2. Reload this extension in `chrome://extensions/`.
+3. Open the options page — the downloaded Supertonic voices will now appear in the `朗读声音` dropdown.
+
+> **Note:** Supertonic voices downloaded inside the *Read Aloud* extension are stored privately within Read Aloud and are **not** exposed to other extensions. You must install the standalone Supertonic extension above for the voices to appear here.
 
 ### 3. Test connection
 
@@ -59,7 +71,8 @@ A lightweight Chrome extension for translating selected text between English and
 
 ## Notes
 
-- The extension uses browser speech synthesis for voice playback; voice quality depends on your operating system and browser.
+- The extension uses Chrome's TTS engine (`chrome.tts`) for voice playback; voice quality depends on your operating system, browser, and any installed TTS voices or extensions.
+- To use high-quality neural voices, install the standalone **Supertonic Text-to-Speech Voices** extension and select the voice in the options page (see [Configure TTS](#2-configure-tts)).
 - If audio playback interferes with other media, the extension will cancel speech synthesis when the panel closes.
 - For best results, use models with strong translation capability.
 
@@ -73,5 +86,5 @@ A lightweight Chrome extension for translating selected text between English and
 ## Troubleshooting
 
 - If translation fails, confirm your backend service is running and reachable.
-- If TTS voices do not appear, refresh the options page and wait for your browser to load available voices.
+- If TTS voices do not appear, refresh the options page and wait for Chrome to load available voices. If you expect Supertonic voices, make sure the standalone **Supertonic Text-to-Speech Voices** extension is installed and reload this extension.
 - If definitions are missing for single words, ensure your backend model is available and supports the request.

@@ -70,14 +70,22 @@
   function fillVoiceSelect() {
     const sel = els_tts().ttsVoice();
     sel.textContent = "";
-    const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
-    const addOpt = (v) => {
-      const o = document.createElement("option");
-      o.value = v.name;
-      o.textContent = v.name + " — " + v.lang;
-      sel.appendChild(o);
-    };
-    voices.forEach(addOpt);
+    const emptyHint = document.getElementById("tts-voices-empty");
+    if (emptyHint) emptyHint.style.display = "block";
+    chrome.runtime.sendMessage({ type: "TTS_GET_VOICES" }, function (res) {
+      if (emptyHint) emptyHint.style.display = "none";
+      if (chrome.runtime.lastError || !res || !res.voices) return;
+      const voices = res.voices;
+      const addOpt = (v) => {
+        const o = document.createElement("option");
+        o.value = v.voiceName;
+        o.textContent = v.voiceName + " — " + (v.lang || "?");
+        sel.appendChild(o);
+      };
+      voices.forEach(addOpt);
+      const saved = sel.getAttribute("data-saved") || "";
+      if (saved) sel.value = saved;
+    });
   }
 
   function load() {
@@ -96,10 +104,10 @@
       els.maxTokens().value = s.maxTokens != null ? s.maxTokens : 512;
       // tts
       try {
+        const sel = els_tts().ttsVoice();
+        sel.setAttribute("data-saved", s.ttsVoiceName || "");
         fillVoiceSelect();
       } catch (e) {}
-      const sel = els_tts().ttsVoice();
-      if (s.ttsVoiceName) sel.value = s.ttsVoiceName;
       els_tts().ttsRate().value = s.ttsRate != null ? s.ttsRate : 1;
       els_tts().ttsPitch().value = s.ttsPitch != null ? s.ttsPitch : 1;
       syncSections();
@@ -158,12 +166,6 @@
   });
   document.getElementById("btnSave").addEventListener("click", save);
   document.getElementById("btnTest").addEventListener("click", test);
-
-  // populate voices when available
-  if (window.speechSynthesis) {
-    window.speechSynthesis.getVoices();
-    window.speechSynthesis.onvoiceschanged = function () { fillVoiceSelect(); };
-  }
 
   load();
 })();
