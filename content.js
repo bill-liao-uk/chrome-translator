@@ -781,5 +781,20 @@
     }
   });
 
-  createPageBtn();
+  chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, function (res) {
+    if (chrome.runtime.lastError || !res) return;
+    if (res.showPageBtn !== false) createPageBtn();
+  });
+
+  chrome.storage.onChanged.addListener(function (changes, area) {
+    if (area !== "sync" || !changes.showPageBtn) return;
+    const show = changes.showPageBtn.newValue !== false;
+    if (show && !pageBtn) {
+      createPageBtn();
+    } else if (!show && pageBtn) {
+      stopPageTranslation();
+      pageBtn.remove();
+      pageBtn = null;
+    }
+  });
 })();

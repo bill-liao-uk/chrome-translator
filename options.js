@@ -15,6 +15,7 @@
     cardLlamacpp: () => document.getElementById("card-llamacpp"),
     secOllama: () => document.getElementById("sec-ollama"),
     secLlamacpp: () => document.getElementById("sec-llamacpp"),
+    showPageBtn: () => document.getElementById("showPageBtn"),
     status: () => document.getElementById("status"),
     modelList: () => document.getElementById("modelList")
   };
@@ -52,6 +53,7 @@
       llamacppModel: els.llamacppModel().value.trim(),
       temperature: parseFloat(els.temperature().value),
       maxTokens: parseInt(els.maxTokens().value, 10),
+      showPageBtn: els.showPageBtn().checked,
       ttsVoiceName: els_tts().ttsVoice().value || "",
       ttsRate: parseFloat(els_tts().ttsRate().value) || 1,
       ttsPitch: parseFloat(els_tts().ttsPitch().value) || 1
@@ -108,6 +110,7 @@
         sel.setAttribute("data-saved", s.ttsVoiceName || "");
         fillVoiceSelect();
       } catch (e) {}
+      els.showPageBtn().checked = s.showPageBtn !== false;
       els_tts().ttsRate().value = s.ttsRate != null ? s.ttsRate : 1;
       els_tts().ttsPitch().value = s.ttsPitch != null ? s.ttsPitch : 1;
       syncSections();

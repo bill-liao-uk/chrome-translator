@@ -6,6 +6,8 @@ const DEFAULT_SETTINGS = {
   llamacppModel: "",
   temperature: 0.2,
   maxTokens: 512,
+  // UI settings
+  showPageBtn: true,
   // TTS settings
   ttsVoiceName: "",
   ttsRate: 1,
