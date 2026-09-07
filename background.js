@@ -286,10 +286,6 @@ function ttsPickVoice(voices, lang, ttsSettings) {
   return null;
 }
 
-chrome.action.onClicked.addListener(() => {
-  chrome.runtime.openOptionsPage();
-});
-
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg && msg.type) {
