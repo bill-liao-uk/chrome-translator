@@ -8,6 +8,7 @@
   const langLabel = document.getElementById("langLabel");
   const resultText = document.getElementById("resultText");
   const btnSpeak = document.getElementById("btnSpeak");
+  const btnCopy = document.getElementById("btnCopy");
 
   let lastResult = null;
   let speaking = false;
@@ -68,6 +69,20 @@
       setStatus("完成");
     });
   }
+
+  btnCopy.addEventListener("click", function () {
+    if (!lastResult) return;
+    const done = function (ok) {
+      btnCopy.textContent = ok ? "已复制" : "复制失败";
+      setTimeout(function () {
+        btnCopy.textContent = "复制";
+      }, 1500);
+    };
+    navigator.clipboard
+      .writeText(lastResult.text)
+      .then(function () { done(true); })
+      .catch(function () { done(false); });
+  });
 
   btnSpeak.addEventListener("click", function () {
     if (!lastResult) return;
