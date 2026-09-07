@@ -185,6 +185,67 @@ function ttsSpeak(text, options) {
   });
 }
 
+function delay(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// chrome.tts 首次调用（尤其是 service worker 冷启动或刚 stop 后立刻 speak）经常
+// 只读出部分音或完全没有声音。这里在失败或 start 事件缺失时做一次重试。
+function ttsSpeakWithRetry(text, options) {
+  const origOnEvent = options.onEvent;
+  const speakOnce = () =>
+    new Promise((resolve) => {
+      if (!chrome.tts || typeof chrome.tts.speak !== "function") {
+        resolve({ ok: false, error: "浏览器不支持 chrome.tts" });
+        return;
+      }
+      // 叠加 start/error 检测，判定这次调用是否"真正开始发声"
+      const state = { started: false, bad: false };
+      options.onEvent = function (event) {
+        if (!event) return;
+        if (event.type === "start") state.started = true;
+        if (event.type === "error" || event.type === "interrupted" || event.type === "cancelled") {
+          state.bad = true;
+        }
+        if (origOnEvent) origOnEvent(event);
+      };
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        // 给 start 事件留出到达窗口，避免正常发音时被误判为失败
+        if (state.bad) {
+          resolve({ ok: false, error: "被中断或出错", started: false });
+          return;
+        }
+        if (state.started) {
+          resolve({ ok: true, started: true });
+          return;
+        }
+        setTimeout(() => {
+          resolve({ ok: !state.bad && state.started, started: state.started, error: state.bad ? "未发声" : undefined });
+        }, 250);
+      };
+      chrome.tts.speak(text, options, () => {
+        if (chrome.runtime.lastError) state.bad = true;
+        settle();
+      });
+    });
+
+  const run = async () => {
+    const first = await speakOnce();
+    if (first.ok && first.started) return { ok: true };
+    // 首次未真正开始发声（冷启动或刚 stop 的竞态），重置引擎后稍等再试一次
+    await delay(180);
+    try { if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop(); } catch (e) {}
+    await delay(120);
+    const second = await speakOnce();
+    return { ok: second.ok && second.started, error: second.error };
+  };
+
+  return run();
+}
+
 function ttsStop() {
   try {
     if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
@@ -303,7 +364,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           };
           if (voice) options.voiceName = voice.voiceName;
-          const res = await ttsSpeak(String(textKey || ""), options);
+          const res = await ttsSpeakWithRetry(String(textKey || ""), options);
           sendResponse(res);
         }
         break;

@@ -29,8 +29,20 @@
       stopSpeech();
       return false;
     }
+    const wasSpeaking = !!speaking;
     stopSpeech();
     const u = { _ctText: text };
+    if (wasSpeaking) {
+      // 刚停止上一段朗读时立即 speak 容易只读出部分音，稍作停顿让引擎重置
+      setTimeout(function () { doSpeak(text, lang, u); }, 60);
+    } else {
+      doSpeak(text, lang, u);
+    }
+    speaking = u;
+    return true;
+  }
+
+  function doSpeak(text, lang, u) {
     try {
       chrome.runtime.sendMessage(
         {
@@ -40,20 +52,17 @@
         },
         function (res) {
           if (chrome.runtime.lastError) {
-            speaking = null;
+            if (speaking === u) speaking = null;
             return;
           }
           if (res && !res.ok) {
-            speaking = null;
+            if (speaking === u) speaking = null;
           }
         }
       );
     } catch (e) {
-      speaking = null;
-      return false;
+      if (speaking === u) speaking = null;
     }
-    speaking = u;
-    return true;
   }
 
   let dragState = null;
