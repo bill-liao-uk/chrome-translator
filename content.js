@@ -154,6 +154,10 @@
   function showPanel(text, rect) {
     createPanel();
     const lang = detectLang(text);
+    const isSingleWord = typeof text === "string" && !/\s/.test(text) && text.length > 0 && text.length <= 64;
+    const defineBtnHtml = isSingleWord
+      ? '<button type="button" class="' + NS + 'define" disabled>详解</button>'
+      : "";
     panel.innerHTML =
       '<div class="' + NS + 'head">' +
       '<span class="' + NS + 'title">划线翻译</span>' +
@@ -170,7 +174,10 @@
       '<div class="' + NS + 'row">' +
       '<div class="' + NS + 'row-head">' +
       '<span class="' + NS + 'lang">译文（…）</span>' +
+      '<span class="' + NS + 'row-actions">' +
+      defineBtnHtml +
       '<button type="button" class="' + NS + 'speak ' + NS + 'speak-tgt" disabled>朗读译文</button>' +
+      "</span>" +
       "</div>" +
       '<div class="' + NS + 'text ' + NS + 'target">' +
       '<span class="' + NS + 'loading">正在翻译…</span>' +
@@ -227,34 +234,42 @@
       if (statusEl) statusEl.textContent = "由本地模型完成";
       repositionPanel();
 
-      // If the user selected a single word/phrase (no whitespace), show detailed definition
-      const isSingleWord = typeof text === "string" && !/\s/.test(text) && text.length > 0 && text.length <= 64;
+      // Single word: enable the "详解" button, but only query the definition
+      // when the user clicks it.
       if (isSingleWord) {
-        const bodyEl = panel.querySelector('.' + NS + 'body');
-        const defRow = document.createElement('div');
-        defRow.className = NS + 'row';
-        defRow.innerHTML =
-          '<div class="' + NS + 'row-head"><span class="' + NS + 'lang">词典</span></div>' +
-          '<div class="' + NS + 'text ' + NS + 'definition"><span class="' + NS + 'loading">正在查询释义…</span></div>';
-        bodyEl.appendChild(defRow);
-        repositionPanel();
-        const defContainer = defRow.querySelector('.' + NS + 'definition');
-        chrome.runtime.sendMessage({ type: 'DEFINE', word: text }, function (dres) {
-          if (chrome.runtime.lastError) {
-            defContainer.textContent = '查询失败：' + chrome.runtime.lastError.message;
-            repositionPanel();
-            return;
-          }
-          if (!dres || !dres.ok) {
-            defContainer.textContent = dres && dres.error ? ('查询失败：' + dres.error) : '查询失败';
-            repositionPanel();
-            return;
-          }
-          // render definition (escape then preserve newlines)
-          defContainer.innerHTML = escapeHtml(dres.text).replace(/\n/g, '<br>');
-          repositionPanel();
+        const defineBtn = panel.querySelector("." + NS + "define");
+        const bodyEl = panel.querySelector("." + NS + "body");
+        if (defineBtn) defineBtn.disabled = false;
+        defineBtn.addEventListener("click", function () {
+          showDefinition(panel, bodyEl, defineBtn, text);
         });
       }
+    });
+  }
+
+  function showDefinition(panel, bodyEl, defineBtn, word) {
+    if (defineBtn) defineBtn.disabled = true;
+    const defRow = document.createElement("div");
+    defRow.className = NS + "row";
+    defRow.innerHTML =
+      '<div class="' + NS + 'row-head"><span class="' + NS + 'lang">词典</span></div>' +
+      '<div class="' + NS + 'text ' + NS + 'definition"><span class="' + NS + 'loading">正在查询释义…</span></div>';
+    bodyEl.appendChild(defRow);
+    repositionPanel();
+    const defContainer = defRow.querySelector("." + NS + "definition");
+    chrome.runtime.sendMessage({ type: "DEFINE", word: word }, function (dres) {
+      if (chrome.runtime.lastError) {
+        defContainer.textContent = "查询失败：" + chrome.runtime.lastError.message;
+        repositionPanel();
+        return;
+      }
+      if (!dres || !dres.ok) {
+        defContainer.textContent = dres && dres.error ? "查询失败：" + dres.error : "查询失败";
+        repositionPanel();
+        return;
+      }
+      defContainer.innerHTML = escapeHtml(dres.text).replace(/\n/g, "<br>");
+      repositionPanel();
     });
   }
 
