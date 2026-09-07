@@ -189,8 +189,33 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+let ttsEngineWarmed = false;
+
+function primeTtsEngine() {
+  return new Promise((resolve) => {
+    if (!chrome.tts || typeof chrome.tts.speak !== "function") {
+      resolve();
+      return;
+    }
+    // 第一次用一段极短的无声占位让引擎完成初始化，避免正式朗读首字被吞。
+    chrome.tts.speak("1", {
+      rate: 2,
+      pitch: 0,
+      enqueue: true,
+      onEvent: function (event) {
+        if (event && (event.type === "start" || event.type === "end" || event.type === "error")) {
+          try { if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop(); } catch (e) {}
+          resolve();
+        }
+      }
+    });
+    // 兜底：即使事件没到，也保证不会一直卡着
+    setTimeout(resolve, 400);
+  });
+}
+
 // chrome.tts 首次调用（尤其是 service worker 冷启动或刚 stop 后立刻 speak）经常
-// 只读出部分音或完全没有声音。这里在失败或 start 事件缺失时做一次重试。
+// 只读出部分音或完全没有声音。这里在首次朗读前预热引擎，并在未真正发声时重试。
 function ttsSpeakWithRetry(text, options) {
   const origOnEvent = options.onEvent;
   const speakOnce = () =>
@@ -233,12 +258,16 @@ function ttsSpeakWithRetry(text, options) {
     });
 
   const run = async () => {
+    // 首次调用前先预热 TTS 引擎，规避冷启动首次发音异常
+    if (!ttsEngineWarmed) {
+      await primeTtsEngine();
+      ttsEngineWarmed = true;
+    }
     const first = await speakOnce();
     if (first.ok && first.started) return { ok: true };
-    // 首次未真正开始发声（冷启动或刚 stop 的竞态），重置引擎后稍等再试一次
-    await delay(180);
+    // 首次未真正开始发声或被打断，重置引擎后稍等再试一次
     try { if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop(); } catch (e) {}
-    await delay(120);
+    await delay(160);
     const second = await speakOnce();
     return { ok: second.ok && second.started, error: second.error };
   };
