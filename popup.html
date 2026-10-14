@@ -124,6 +124,7 @@
     <textarea id="input" placeholder="输入英文或中文，自动翻译为另一种语言…"></textarea>
     <div class="actions">
       <button type="button" class="primary" id="btnTranslate">翻译</button>
+      <button type="button" class="speak" id="btnSpeakInput" data-label="朗读原文">朗读原文</button>
       <span class="status" id="status"></span>
     </div>
     <div class="result" id="result">
@@ -131,7 +132,7 @@
         <span class="lang-label" id="langLabel">译文</span>
         <span style="display:flex;gap:8px;">
           <button type="button" class="speak" id="btnCopy">复制</button>
-          <button type="button" class="speak" id="btnSpeak">朗读</button>
+          <button type="button" class="speak" id="btnSpeak" data-label="朗读">朗读</button>
         </span>
       </div>
       <div class="res-body" id="resultText"></div>

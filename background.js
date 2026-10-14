@@ -384,6 +384,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   } catch (e) {
                     // ignore
                   }
+                } else {
+                  // 发送方是扩展页面（如 popup），通过运行时消息通知其恢复朗读状态
+                  try {
+                    chrome.runtime.sendMessage({ type: "TTS_END", text: textKey }, function () {
+                      if (chrome.runtime.lastError) { /* 无接收方，忽略 */ }
+                    });
+                  } catch (e) {
+                    // ignore
+                  }
                 }
               }
             }
