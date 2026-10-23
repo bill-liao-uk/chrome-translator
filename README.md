@@ -35,6 +35,10 @@ A lightweight Chrome extension for translating selected text between English and
 - Adjust `语速（rate）` and `音调（pitch）` for more natural playback.
 - Click `保存设置` to store your preferences.
 - The dropdown lists all voices available via Chrome's TTS engine (`chrome.tts`), including browser system voices and voices registered by third-party extensions.
+- A configured voice is used only when it supports the text's language; otherwise, Chrome chooses a voice based on the requested language.
+- If a selected voice reports an engine error, playback retries once using Chrome's language-based voice selection.
+- If the selected or default voice reports a playback error, the extension resets the engine and retries a bounded number of times.
+- Each click on a speak button starts the requested text again; clicking it does not toggle playback off.
 
 #### Using Supertonic voices (high-quality neural voices)
 

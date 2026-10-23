@@ -15,30 +15,22 @@
   let speaking = null;
 
   function stopSpeech() {
-    try {
-      chrome.runtime.sendMessage({ type: "TTS_STOP" });
-    } catch (e) {
-      // ignore
-    }
     speaking = null;
+    try {
+      chrome.runtime.sendMessage({ type: "TTS_STOP" }, function () {
+        if (chrome.runtime.lastError) {
+          console.error("[划线翻译] 停止朗读失败:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (e) {
+      console.error("[划线翻译] 停止朗读失败:", e);
+    }
   }
 
   function speak(text, lang) {
-    // if the same text is already playing, toggle off
-    if (speaking && speaking._ctText === text) {
-      stopSpeech();
-      return false;
-    }
-    const wasSpeaking = !!speaking;
-    stopSpeech();
-    const u = { _ctText: text };
-    if (wasSpeaking) {
-      // 刚停止上一段朗读时立即 speak 容易只读出部分音，稍作停顿让引擎重置
-      setTimeout(function () { doSpeak(text, lang, u); }, 60);
-    } else {
-      doSpeak(text, lang, u);
-    }
+    const u = {};
     speaking = u;
+    doSpeak(text, lang, u);
     return true;
   }
 
@@ -52,15 +44,18 @@
         },
         function (res) {
           if (chrome.runtime.lastError) {
+            console.error("[划线翻译] 朗读请求失败:", chrome.runtime.lastError.message);
             if (speaking === u) speaking = null;
             return;
           }
-          if (res && !res.ok) {
+          if (res && !res.ok && !res.cancelled) {
+            console.error("[划线翻译] 朗读请求失败:", res.error || "未知错误");
             if (speaking === u) speaking = null;
           }
         }
       );
     } catch (e) {
+      console.error("[划线翻译] 朗读请求失败:", e);
       if (speaking === u) speaking = null;
     }
   }

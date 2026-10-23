@@ -171,108 +171,85 @@ function ttsGetVoices() {
   });
 }
 
-function ttsSpeak(text, options) {
+function ttsSpeak(text, options, retryWithDefaultVoice, isCurrentRequest) {
   return new Promise((resolve) => {
     if (!chrome.tts || typeof chrome.tts.speak !== "function") {
       resolve({ ok: false, error: "浏览器不支持 chrome.tts" });
       return;
     }
-    chrome.tts.speak(text, options, () => {
-      resolve(!!chrome.runtime.lastError
-        ? { ok: false, error: chrome.runtime.lastError.message }
-        : { ok: true });
-    });
-  });
-}
 
-function delay(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-let ttsEngineWarmed = false;
-
-function primeTtsEngine() {
-  return new Promise((resolve) => {
-    if (!chrome.tts || typeof chrome.tts.speak !== "function") {
-      resolve();
-      return;
-    }
-    // 第一次用一段极短的无声占位让引擎完成初始化，避免正式朗读首字被吞。
-    chrome.tts.speak("1", {
-      rate: 2,
-      pitch: 0,
-      enqueue: true,
-      onEvent: function (event) {
-        if (event && (event.type === "start" || event.type === "end" || event.type === "error")) {
-          try { if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop(); } catch (e) {}
-          resolve();
-        }
-      }
-    });
-    // 兜底：即使事件没到，也保证不会一直卡着
-    setTimeout(resolve, 400);
-  });
-}
-
-// chrome.tts 首次调用（尤其是 service worker 冷启动或刚 stop 后立刻 speak）经常
-// 只读出部分音或完全没有声音。这里在首次朗读前预热引擎，并在未真正发声时重试。
-function ttsSpeakWithRetry(text, options) {
-  const origOnEvent = options.onEvent;
-  const speakOnce = () =>
-    new Promise((resolve) => {
-      if (!chrome.tts || typeof chrome.tts.speak !== "function") {
-        resolve({ ok: false, error: "浏览器不支持 chrome.tts" });
+    let attempt = 0;
+    let settled = false;
+    let fallbackAttempted = false;
+    let transientRetryAttempted = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const retry = (useDefaultVoice) => {
+      if (!isCurrentRequest()) {
+        finish({ ok: false, cancelled: true });
         return;
       }
-      // 叠加 start/error 检测，判定这次调用是否"真正开始发声"
-      const state = { started: false, bad: false };
-      options.onEvent = function (event) {
-        if (!event) return;
-        if (event.type === "start") state.started = true;
-        if (event.type === "error" || event.type === "interrupted" || event.type === "cancelled") {
-          state.bad = true;
-        }
-        if (origOnEvent) origOnEvent(event);
-      };
-      let settled = false;
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        // 给 start 事件留出到达窗口，避免正常发音时被误判为失败
-        if (state.bad) {
-          resolve({ ok: false, error: "被中断或出错", started: false });
+      attempt++;
+      ttsStop();
+      setTimeout(() => speakAttempt(useDefaultVoice), 180);
+    };
+    const handleFailure = (useDefaultVoice, errorMessage) => {
+      if (!useDefaultVoice && retryWithDefaultVoice && !fallbackAttempted) {
+        fallbackAttempted = true;
+        retry(true);
+        return;
+      }
+      if (!transientRetryAttempted) {
+        transientRetryAttempted = true;
+        retry(useDefaultVoice);
+        return;
+      }
+      console.error("[划线翻译] 语音引擎朗读失败:", errorMessage || "未知错误");
+      if (options.onEvent) options.onEvent({ type: "error", errorMessage });
+      finish({ ok: false, error: errorMessage || "朗读引擎出错" });
+    };
+    const speakAttempt = (useDefaultVoice) => {
+      if (!isCurrentRequest()) {
+        finish({ ok: false, cancelled: true });
+        return;
+      }
+      const attemptId = ++attempt;
+      let terminalEventReceived = false;
+      const attemptOptions = Object.assign({}, options);
+      if (useDefaultVoice) delete attemptOptions.voiceName;
+      attemptOptions.onEvent = function (event) {
+        if (attemptId !== attempt || terminalEventReceived || !event || !isCurrentRequest()) return;
+        if (event.type === "error") {
+          terminalEventReceived = true;
+          handleFailure(useDefaultVoice, event.errorMessage);
           return;
         }
-        if (state.started) {
-          resolve({ ok: true, started: true });
+        if (event.type === "end" || event.type === "interrupted" || event.type === "cancelled") {
+          terminalEventReceived = true;
+        }
+        if (options.onEvent) options.onEvent(event);
+      };
+
+      chrome.tts.speak(text, attemptOptions, () => {
+        if (attemptId !== attempt || terminalEventReceived) return;
+        if (!isCurrentRequest()) {
+          finish({ ok: false, cancelled: true });
           return;
         }
-        setTimeout(() => {
-          resolve({ ok: !state.bad && state.started, started: state.started, error: state.bad ? "未发声" : undefined });
-        }, 250);
-      };
-      chrome.tts.speak(text, options, () => {
-        if (chrome.runtime.lastError) state.bad = true;
-        settle();
+        const error = chrome.runtime.lastError;
+        if (error) {
+          handleFailure(useDefaultVoice, error.message);
+        } else {
+          finish({ ok: true });
+        }
       });
-    });
+    };
 
-  const run = async () => {
-    // 首次调用前先预热 TTS 引擎，规避冷启动首次发音异常
-    if (!ttsEngineWarmed) {
-      await primeTtsEngine();
-      ttsEngineWarmed = true;
-    }
-    const first = await speakOnce();
-    if (first.ok && first.started) return { ok: true };
-    // 首次未真正开始发声或被打断，重置引擎后稍等再试一次
-    try { if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop(); } catch (e) {}
-    await delay(160);
-    const second = await speakOnce();
-    return { ok: second.ok && second.started, error: second.error };
-  };
-
-  return run();
+    speakAttempt(false);
+  });
 }
 
 function ttsStop() {
@@ -291,31 +268,22 @@ function ttsPickVoice(voices, lang, ttsSettings) {
     const base = norm(lang).split("-")[0];
     return l === norm(lang) || l.split("-")[0] === base;
   };
-  const qualityHints = ["supertonic", "neural", "wavenet", "google", "microsoft", "neural-speech", "samantha", "alloy"];
-  const isQuality = (v) => {
-    const n = String(v.voiceName || "").toLowerCase();
-    return qualityHints.some((h) => n.includes(h));
-  };
-  // 1) user-selected voice by exact name
   if (ttsSettings && ttsSettings.ttsVoiceName) {
-    const byName = voices.find((v) => v.voiceName === ttsSettings.ttsVoiceName);
+    const byName = voices.find((v) => v.voiceName === ttsSettings.ttsVoiceName && langMatches(v));
     if (byName) return byName;
   }
-  // 2) prefer high-quality / neural voices, but ONLY if they speak the requested language,
-  //    so that (e.g.) an English word is not pronounced by a Chinese voice.
-  const findQualityLang = voices.find((v) => isQuality(v) && langMatches(v));
-  if (findQualityLang) return findQualityLang;
-  // 3) fallback to any voice of the requested language
-  const langVoice = voices.find((v) => norm(v.lang) === norm(lang)) ||
-    voices.find((v) => norm(v.lang).split("-")[0] === norm(lang).split("-")[0]);
-  if (langVoice) return langVoice;
-  // 4) last resort: any quality voice (language-agnostic)
-  const findQuality = voices.find(isQuality);
-  if (findQuality) return findQuality;
+  // An unconfigured voice may belong to an intermittently available TTS
+  // extension. Let Chrome choose the default voice for the requested language.
   return null;
 }
 
+let ttsRequestVersion = 0;
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const requestVersion = msg && (msg.type === "TTS_SPEAK" || msg.type === "TTS_STOP")
+    ? ++ttsRequestVersion
+    : ttsRequestVersion;
+
   (async () => {
     switch (msg && msg.type) {
       case "GET_SETTINGS":
@@ -365,7 +333,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "TTS_SPEAK":
         {
           const settings = await getSettings();
+          if (requestVersion !== ttsRequestVersion) {
+            sendResponse({ ok: false, cancelled: true });
+            break;
+          }
           const voices = await ttsGetVoices();
+          if (requestVersion !== ttsRequestVersion) {
+            sendResponse({ ok: false, cancelled: true });
+            break;
+          }
           const lang = String(msg.lang || "en-US");
           const voice = ttsPickVoice(voices, lang, settings);
           const tabId = sender && sender.tab ? sender.tab.id : null;
@@ -376,6 +352,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             pitch: Number(msg.pitch != null ? msg.pitch : settings.ttsPitch) || 1,
             onEvent: function (event) {
               if (event && (event.type === "end" || event.type === "interrupted" || event.type === "cancelled" || event.type === "error")) {
+                if (requestVersion !== ttsRequestVersion) return;
                 if (tabId != null && textKey) {
                   try {
                     chrome.tabs.sendMessage(tabId, { type: "TTS_END", text: textKey }, function () {
@@ -398,7 +375,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           };
           if (voice) options.voiceName = voice.voiceName;
-          const res = await ttsSpeakWithRetry(String(textKey || ""), options);
+          const res = await ttsSpeak(
+            String(textKey || ""),
+            options,
+            !!voice,
+            () => requestVersion === ttsRequestVersion
+          );
           sendResponse(res);
         }
         break;
