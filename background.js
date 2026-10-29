@@ -233,19 +233,22 @@ function ttsSpeak(text, options, retryWithDefaultVoice, isCurrentRequest) {
         if (options.onEvent) options.onEvent(event);
       };
 
-      chrome.tts.speak(text, attemptOptions, () => {
-        if (attemptId !== attempt || terminalEventReceived) return;
-        if (!isCurrentRequest()) {
-          finish({ ok: false, cancelled: true });
-          return;
-        }
-        const error = chrome.runtime.lastError;
-        if (error) {
-          handleFailure(useDefaultVoice, error.message);
-        } else {
-          finish({ ok: true });
-        }
-      });
+      // 添加延时确保上一个朗读任务完全结束
+      setTimeout(() => {
+        chrome.tts.speak(text, attemptOptions, () => {
+          if (attemptId !== attempt || terminalEventReceived) return;
+          if (!isCurrentRequest()) {
+            finish({ ok: false, cancelled: true });
+            return;
+          }
+          const error = chrome.runtime.lastError;
+          if (error) {
+            handleFailure(useDefaultVoice, error.message);
+          } else {
+            finish({ ok: true });
+          }
+        });
+      }, 50);
     };
 
     speakAttempt(false);

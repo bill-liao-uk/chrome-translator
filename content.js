@@ -15,19 +15,32 @@
   let speaking = null;
 
   function stopSpeech() {
-    speaking = null;
-    try {
-      chrome.runtime.sendMessage({ type: "TTS_STOP" }, function () {
-        if (chrome.runtime.lastError) {
-          console.error("[划线翻译] 停止朗读失败:", chrome.runtime.lastError.message);
-        }
+    if (speaking) {
+      const currentSpeaking = speaking;
+      speaking = null;
+      try {
+        chrome.runtime.sendMessage({ type: "TTS_STOP" }, function () {
+          if (chrome.runtime.lastError) {
+            console.error("[划线翻译] 停止朗读失败:", chrome.runtime.lastError.message);
+          }
+        });
+      } catch (e) {
+        console.error("[划线翻译] 停止朗读失败:", e);
+      }
+      
+      // 清除所有活跃的朗读按钮状态
+      document.querySelectorAll("." + NS + "active").forEach(function (b) {
+        b.classList.remove(NS + "active");
       });
-    } catch (e) {
-      console.error("[划线翻译] 停止朗读失败:", e);
     }
   }
 
   function speak(text, lang) {
+    // 如果正在朗读，先停止
+    if (speaking) {
+      stopSpeech();
+    }
+    
     const u = {};
     speaking = u;
     doSpeak(text, lang, u);
@@ -35,6 +48,9 @@
   }
 
   function doSpeak(text, lang, u) {
+    // 确保在发送请求前仍然有效
+    if (speaking !== u) return;
+    
     try {
       chrome.runtime.sendMessage(
         {
