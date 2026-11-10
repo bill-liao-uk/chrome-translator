@@ -13,6 +13,13 @@ const DEFAULT_SETTINGS = {
   ttsVoiceName: "",
   ttsVoiceNameEn: "",
   ttsVoiceNameZh: "",
+  // browser: 使用 chrome.tts；kokoro: 调用本地 HTTP TTS（OpenAI 兼容接口）
+  ttsEngine: "browser",
+  kokoroBaseUrl: "http://localhost:8880",
+  kokoroModel: "kokoro",
+  kokoroFormat: "mp3",
+  kokoroVoiceEn: "af_heart",
+  kokoroVoiceZh: "zf_xiaobei",
   ttsRate: 1,
   ttsPitch: 1
 };
@@ -558,12 +565,394 @@ function ttsSpeak(text, options, isCurrentRequest, voiceIsExtension) {
 
 function ttsStop() {
   ttsLastActiveAt = Date.now();
+  stopKokoroPlayback();
   try {
     if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
   } catch (e) {
     // ignore
   }
 }
+
+// 朗读结束/中断通知：有 tabId 时发给内容脚本，否则发给扩展页面（popup）。
+function sendTtsEnd(tabId, textKey) {
+  if (tabId != null && textKey) {
+    try {
+      chrome.tabs.sendMessage(tabId, { type: "TTS_END", text: textKey }, function () {
+        if (chrome.runtime.lastError) { /* 接收方可能已存在或无监听，忽略 */ }
+      });
+    } catch (e) {
+      // ignore
+    }
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage({ type: "TTS_END", text: textKey }, function () {
+      if (chrome.runtime.lastError) { /* 无接收方，忽略 */ }
+    });
+  } catch (e) {
+    // ignore
+  }
+}
+
+// ---------- 本地 HTTP TTS（Kokoro-FastAPI，OpenAI 兼容接口） ----------
+
+let kokoroAbort = null;        // 正在进行的合成请求
+let kokoroPlaySeq = 0;         // 播放任务 id 序号
+let kokoroCurrentFinish = null; // 当前播放任务的结束回调（stop 时立即释放等待）
+let offscreenAlive = false;
+let offscreenCreating = null;
+
+function kokoroBaseUrl(settings) {
+  return String((settings && settings.kokoroBaseUrl) || "http://localhost:8880")
+    .trim().replace(/\/+$/, "");
+}
+
+function kokoroVoiceForLang(settings, lang) {
+  const code = String(lang || "").replace("_", "-").toLowerCase().split("-")[0];
+  if (code === "zh") return (settings && settings.kokoroVoiceZh) || "zf_xiaobei";
+  return (settings && settings.kokoroVoiceEn) || "af_heart";
+}
+
+// 音频需要由扩展自己的页面播放：service worker 不能直接出声，
+// 内容脚本里的 <audio> 又会受网页 CSP / 混合内容策略影响。
+function ensureOffscreenDocument(force) {
+  if (offscreenAlive && !force) return Promise.resolve();
+  if (offscreenCreating) return offscreenCreating;
+  offscreenCreating = (async function () {
+    if (!chrome.offscreen || typeof chrome.offscreen.createDocument !== "function") {
+      throw new Error("当前浏览器不支持 offscreen 音频播放，请升级 Chrome");
+    }
+    const canCheck = typeof chrome.offscreen.hasDocument === "function";
+    if (!force && canCheck && await chrome.offscreen.hasDocument()) {
+      offscreenAlive = true;
+      return;
+    }
+    // 文档可能已被浏览器回收（例如没有声音时），先关掉残留的再重建。
+    if (force && canCheck && typeof chrome.offscreen.closeDocument === "function" &&
+      await chrome.offscreen.hasDocument().catch(function () { return false; })) {
+      try {
+        await chrome.offscreen.closeDocument();
+      } catch (e) {
+        // ignore
+      }
+    }
+    try {
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["AUDIO_PLAYBACK"],
+        justification: "播放本地 Kokoro TTS 合成的朗读音频"
+      });
+    } catch (e) {
+      const message = (e && e.message) || String(e);
+      // 并发创建时可能提示已存在，视为成功
+      if (!/single offscreen|already|only a single/i.test(message)) throw e;
+    }
+    offscreenAlive = true;
+  })().finally(function () {
+    offscreenCreating = null;
+  });
+  return offscreenCreating;
+}
+
+function stopKokoroPlayback() {
+  if (kokoroAbort) {
+    try {
+      kokoroAbort.abort();
+    } catch (e) {
+      // ignore
+    }
+    kokoroAbort = null;
+  }
+  const finish = kokoroCurrentFinish;
+  kokoroCurrentFinish = null;
+  if (finish) finish({ ok: false, cancelled: true });
+  if (offscreenAlive) {
+    try {
+      chrome.runtime.sendMessage({ type: "KOKORO_STOP" }, function () {
+        void chrome.runtime.lastError;
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+function bufferToDataUrl(buffer, mime) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return "data:" + mime + ";base64," + btoa(binary);
+}
+
+// MV3 的 service worker 会在空闲约 30 秒后被回收，离屏音频文档也会随之关闭，
+// 结果就是长文本朗读到一半突然没声。朗读期间定期调用扩展 API 保活。
+let kokoroKeepAliveTimer = null;
+
+function kokoroKeepAliveStart() {
+  if (kokoroKeepAliveTimer != null) return;
+  kokoroKeepAliveTimer = setInterval(function () {
+    try {
+      chrome.runtime.getPlatformInfo(function () {
+        void chrome.runtime.lastError;
+      });
+    } catch (e) {
+      // ignore
+    }
+  }, 15000);
+}
+
+function kokoroKeepAliveStop() {
+  if (kokoroKeepAliveTimer != null) {
+    clearInterval(kokoroKeepAliveTimer);
+    kokoroKeepAliveTimer = null;
+  }
+}
+
+// Kokoro 一次合成过长文本时容易受 token 上限影响，而且整段合成要等很久才出声。
+// 这里按句子切分（每段不超过 300 字符），逐段合成、逐段播放，句间还可以预取下一段。
+const KOKORO_MAX_CHUNK = 300;
+
+function splitKokoroText(text, maxLen) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  if (clean.length <= maxLen) return [clean];
+
+  const parts = clean.match(/[^.!?。！？;；]+[.!?。！？;；]*/g) || [clean];
+  const chunks = [];
+  let buf = "";
+
+  function flush() {
+    if (buf) chunks.push(buf);
+    buf = "";
+  }
+
+  function join(a, b) {
+    // 中文句子之间不需要空格，英文需要在单词间补一个空格
+    const needSpace = /[A-Za-z0-9]$/.test(a) && /^[A-Za-z0-9]/.test(b);
+    return a + (needSpace ? " " : "") + b;
+  }
+
+  parts.forEach(function (part) {
+    const piece = part.trim();
+    if (!piece) return;
+    if (buf && buf.length + piece.length + 1 > maxLen) flush();
+    if (piece.length <= maxLen) {
+      buf = buf ? join(buf, piece) : piece;
+      return;
+    }
+    // 单句超长：按空格尽量切成不超过 maxLen 的片段
+    flush();
+    let rest = piece;
+    while (rest.length > maxLen) {
+      let cut = rest.lastIndexOf(" ", maxLen);
+      if (cut < maxLen * 0.5) cut = maxLen;
+      const head = rest.slice(0, cut).trim();
+      if (head) chunks.push(head);
+      rest = rest.slice(cut).trim();
+    }
+    buf = rest;
+  });
+  flush();
+  return chunks;
+}
+
+async function kokoroFetchAudio(text, lang, settings) {
+  const base = kokoroBaseUrl(settings);
+  const format = settings.kokoroFormat === "wav" ? "wav" : "mp3";
+  const controller = new AbortController();
+  kokoroAbort = controller;
+
+  let res;
+  try {
+    res = await fetch(base + "/v1/audio/speech", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: String(settings.kokoroModel || "kokoro").trim() || "kokoro",
+        input: text,
+        voice: kokoroVoiceForLang(settings, lang),
+        response_format: format,
+        speed: Number(settings.ttsRate) || 1,
+        stream: false
+      }),
+      signal: controller.signal
+    });
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    throw new Error("无法连接本地 Kokoro TTS（" + base +
+      "）。请确认服务已启动、端口正确，并重新加载扩展以授予本地访问权限。");
+  } finally {
+    if (kokoroAbort === controller) kokoroAbort = null;
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(function () { return ""; });
+    let hint = "";
+    if (res.status === 404) {
+      hint = "（接口 /v1/audio/speech 不存在，请确认使用的是 Kokoro-FastAPI）";
+    } else if (format === "mp3") {
+      hint = "（若服务端缺少 ffmpeg，请在设置里把音频格式改为 wav）";
+    }
+    throw new Error("Kokoro HTTP " + res.status +
+      (body ? "：" + body.slice(0, 200) : "") + hint);
+  }
+
+  return {
+    bytes: await res.arrayBuffer(),
+    mime: format === "wav" ? "audio/wav" : "audio/mpeg"
+  };
+}
+
+function kokoroPlayAudio(src, maxMs) {
+  return new Promise(function (resolve) {
+    const id = "kokoro-" + (++kokoroPlaySeq);
+    let done = false;
+    const timer = setTimeout(function () {
+      finish({ ok: false, error: "Kokoro 音频播放超时" });
+    }, maxMs || 180000);
+
+    function onMessage(msg) {
+      if (!msg || msg.type !== "KOKORO_AUDIO_EVENT" || msg.id !== id) return;
+      if (msg.event === "start") return;
+      if (msg.event === "error") {
+        finish({ ok: false, error: msg.error || "Kokoro 音频播放失败" });
+        return;
+      }
+      if (msg.event === "end") finish({ ok: true });
+    }
+
+    function finish(result) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      chrome.runtime.onMessage.removeListener(onMessage);
+      if (kokoroCurrentFinish === finish) kokoroCurrentFinish = null;
+      resolve(result);
+    }
+
+    kokoroCurrentFinish = finish;
+    chrome.runtime.onMessage.addListener(onMessage);
+
+    let retried = false;
+    function sendPlay() {
+      try {
+        chrome.runtime.sendMessage({ type: "KOKORO_PLAY", id: id, src: src }, function () {
+          const err = chrome.runtime.lastError;
+          if (!err || done) return;
+          if (retried) {
+            finish({ ok: false, error: "无法启动音频播放：" + err.message });
+            return;
+          }
+          // 离屏文档可能已被浏览器回收（例如长时间没有声音），重建后再试一次。
+          retried = true;
+          ensureOffscreenDocument(true).then(function () {
+            if (!done) sendPlay();
+          }).catch(function (e) {
+            finish({ ok: false, error: (e && e.message) || String(e) });
+          });
+        });
+      } catch (e) {
+        finish({ ok: false, error: (e && e.message) || String(e) });
+      }
+    }
+    sendPlay();
+  });
+}
+
+async function kokoroSpeak(text, lang, settings, tabId, isCurrent) {
+  const textKey = String(text || "");
+  if (!textKey.trim()) return { ok: true };
+  ttsActiveSpeaks++;
+  kokoroKeepAliveStart();
+  try {
+    // 本地音频与浏览器语音共用一个“朗读”语义：开始前停掉 chrome.tts，
+    // 避免上一段系统语音和新的 Kokoro 语音同时播放。
+    try {
+      if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
+    } catch (e) {
+      // ignore
+    }
+    ttsLastActiveAt = Date.now();
+
+    const voice = kokoroVoiceForLang(settings, lang);
+    const chunks = splitKokoroText(textKey, KOKORO_MAX_CHUNK);
+    console.info("[划线翻译] 朗读语音: Kokoro " + voice + "（本地 " +
+      kokoroBaseUrl(settings) + "） | 语言:", lang, "| 长度:", textKey.length,
+      "字符 /", chunks.length, "段 | 文本:", textKey.slice(0, 40));
+
+    // 先合成第一段，立刻播放；播放期间预取下一段，避免句与句之间的停顿。
+    let pending = kokoroFetchAudio(chunks[0], lang, settings);
+    pending.catch(function () { /* 真正的错误在下面的 await 里处理 */ });
+
+    for (let i = 0; i < chunks.length; i++) {
+      const audio = await pending;
+      if (!isCurrent()) return { ok: false, cancelled: true };
+
+      if (i + 1 < chunks.length) {
+        pending = kokoroFetchAudio(chunks[i + 1], lang, settings);
+        pending.catch(function () { /* 同上 */ });
+      }
+
+      await ensureOffscreenDocument();
+      if (!isCurrent()) return { ok: false, cancelled: true };
+
+      const src = bufferToDataUrl(audio.bytes, audio.mime);
+      const timeoutMs = Math.min(300000, Math.max(60000, chunks[i].length * 400));
+      const result = await kokoroPlayAudio(src, timeoutMs);
+      if (!result.ok) {
+        if (result.cancelled) return result;
+        if (isCurrent()) sendTtsEnd(tabId, textKey);
+        return result;
+      }
+    }
+
+    if (isCurrent()) sendTtsEnd(tabId, textKey);
+    return { ok: true };
+  } catch (e) {
+    if (e && e.name === "AbortError") return { ok: false, cancelled: true };
+    const message = (e && e.message) || String(e);
+    console.error("[划线翻译] Kokoro 朗读失败:", message);
+    if (isCurrent()) sendTtsEnd(tabId, textKey);
+    return { ok: false, error: message };
+  } finally {
+    ttsActiveSpeaks--;
+    if (ttsActiveSpeaks <= 0) kokoroKeepAliveStop();
+  }
+}
+
+// 从 /v1/audio/voices 或 /health 读取服务信息，供设置页“测试 Kokoro 连接”使用。
+async function kokoroProbe(base) {
+  const clean = String(base || "http://localhost:8880").trim().replace(/\/+$/, "");
+  let voicesError = null;
+  try {
+    const res = await fetch(clean + "/v1/audio/voices");
+    if (res.ok) {
+      const data = await res.json().catch(function () { return null; });
+      const raw = Array.isArray(data) ? data
+        : (data && (data.voices || data.data)) || [];
+      const voices = raw.map(function (v) {
+        if (typeof v === "string") return v;
+        return (v && (v.name || v.id || v.voice_id || v.voice)) || "";
+      }).filter(Boolean);
+      return { ok: true, voices: voices };
+    }
+    if (res.status !== 404) voicesError = new Error("HTTP " + res.status);
+  } catch (e) {
+    voicesError = e;
+  }
+  // 语音列表接口不可用时退回 /health，只要服务在线就仍可朗读
+  try {
+    const health = await fetch(clean + "/health");
+    if (!health.ok) throw new Error("HTTP " + health.status);
+    return { ok: true, voices: [] };
+  } catch (e) {
+    throw voicesError || e;
+  }
+}
+
 
 function ttsLangMatches(voiceLang, lang) {
   if (!voiceLang) return false;
@@ -693,6 +1082,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const alreadySpeaking = await ttsIsSpeaking();
           if (alreadySpeaking !== true && ttsActiveSpeaks === 0) {
             const settings = await getSettings();
+            // Kokoro 走本地 HTTP，没有需要预热的浏览器引擎
+            if (settings.ttsEngine === "kokoro") {
+              sendResponse({ ok: true });
+              break;
+            }
             const lang = String(msg.lang || "en-US");
             const voices = await ttsGetVoicesForSettings(settings, lang);
             const voice = ttsResolveVoice(voices, lang, settings);
@@ -720,14 +1114,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             break;
           }
           const lang = String(msg.lang || "en-US");
+          const tabId = sender && sender.tab ? sender.tab.id : null;
+          const textKey = String(msg.text || "");
+
+          // 新请求会取代旧请求：先停掉上一段本地音频，避免两段声音重叠
+          stopKokoroPlayback();
+
+          if (settings.ttsEngine === "kokoro") {
+            const res = await kokoroSpeak(
+              textKey,
+              lang,
+              settings,
+              tabId,
+              () => requestVersion === ttsRequestVersion
+            );
+            sendResponse(res);
+            break;
+          }
+
           const voices = await ttsGetVoicesForSettings(settings, lang);
           if (requestVersion !== ttsRequestVersion) {
             sendResponse({ ok: false, cancelled: true });
             break;
           }
           const voice = ttsResolveVoice(voices, lang, settings);
-          const tabId = sender && sender.tab ? sender.tab.id : null;
-          const textKey = String(msg.text || "");
           const options = {
             lang: lang,
             rate: Number(msg.rate != null ? msg.rate : settings.ttsRate) || 1,
@@ -735,24 +1145,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             onEvent: function (event) {
               if (event && (event.type === "end" || event.type === "interrupted" || event.type === "cancelled" || event.type === "error")) {
                 if (requestVersion !== ttsRequestVersion) return;
-                if (tabId != null && textKey) {
-                  try {
-                    chrome.tabs.sendMessage(tabId, { type: "TTS_END", text: textKey }, function () {
-                      if (chrome.runtime.lastError) { /* 接收方可能已存在或无监听，忽略 */ }
-                    });
-                  } catch (e) {
-                    // ignore
-                  }
-                } else {
-                  // 发送方是扩展页面（如 popup），通过运行时消息通知其恢复朗读状态
-                  try {
-                    chrome.runtime.sendMessage({ type: "TTS_END", text: textKey }, function () {
-                      if (chrome.runtime.lastError) { /* 无接收方，忽略 */ }
-                    });
-                  } catch (e) {
-                    // ignore
-                  }
-                }
+                sendTtsEnd(tabId, textKey);
               }
             }
           };
@@ -792,11 +1185,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse(res);
           } finally {
             ttsActiveSpeaks--;
+            if (ttsActiveSpeaks <= 0) kokoroKeepAliveStop();
           }
         }
         break;
       case "TTS_STOP":
         ttsStop();
+        sendResponse({ ok: true });
+        break;
+      case "KOKORO_TEST":
+        {
+          const settings = await getSettings();
+          const base = String(msg.kokoroBaseUrl || settings.kokoroBaseUrl || "http://localhost:8880");
+          try {
+            const result = await kokoroProbe(base);
+            sendResponse({ ok: true, base: base, voices: result.voices });
+          } catch (e) {
+            const reason = (e && e.message) || String(e);
+            sendResponse({
+              ok: false,
+              error: "无法连接 " + base + "：" +
+                (/failed to fetch|networkerror/i.test(reason)
+                  ? "服务未启动或端口不正确（请确认 Kokoro-FastAPI 正在运行，并重新加载扩展）"
+                  : reason)
+            });
+          }
+        }
+        break;
+      case "KOKORO_AUDIO_EVENT":
+        // 离屏文档的播放进度通知，由 kokoroPlayAudio 内部监听
         sendResponse({ ok: true });
         break;
       default:

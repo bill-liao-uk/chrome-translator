@@ -205,31 +205,82 @@
 
     <div class="card">
       <h2>朗读设置</h2>
-      <div class="grid-2">
-        <label class="field">
-          <span class="field-label">英文朗读声音</span>
-          <select id="ttsVoiceEn"></select>
-        </label>
-        <label class="field">
-          <span class="field-label">中文朗读声音</span>
-          <select id="ttsVoiceZh"></select>
-        </label>
+      <label class="field">
+        <span class="field-label">朗读引擎</span>
+        <select id="ttsEngine">
+          <option value="browser">浏览器语音（系统 / chrome.tts）</option>
+          <option value="kokoro">本地 Kokoro-82M（HTTP TTS）</option>
+        </select>
+        <span class="field-desc">浏览器语音起播最快、无需服务；Kokoro 由本地服务合成，音质和中文自然度通常更好。</span>
+      </label>
+
+      <div class="section" id="tts-browser-fields">
+        <div class="grid-2">
+          <label class="field">
+            <span class="field-label">英文朗读声音</span>
+            <select id="ttsVoiceEn"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">中文朗读声音</span>
+            <select id="ttsVoiceZh"></select>
+          </label>
+        </div>
+        <span class="field-desc">中英文分别选择，避免同一段文字在两种音色之间跳。留空由浏览器自动选择该语言的最佳语音；下拉框会优先排列 Premium / Enhanced 高质量语音。</span>
+        <span class="field-desc" id="tts-voices-empty" style="display: none;">正在加载声音列表…若长时间为空，请确认已安装相关 TTS 扩展并刷新设置页。</span>
+        <span class="field-desc" id="tts-supertonic-hint" style="color: #8a5b00; margin-top: 6px; line-height: 1.5; display: block;">
+          💡 想要高质量 AI 声音：优先使用系统自带的 Premium / Enhanced 语音（如 macOS 的 Serena、Jamie、Tom、Evan，中文可在「系统设置 → 辅助功能 → 朗读内容 → 系统语音 → 管理语音」下载），它们由系统直接合成，起播更快、更稳定。
+          若仍想使用「Supertonic M3」等第三方神经语音，请先安装独立的
+          <a href="https://chromewebstore.google.com/detail/supertonic-text-to-speech/mdoplmghlkjcnegkdhocjbjcncocbdhk" target="_blank" rel="noopener">Supertonic Text-to-Speech Voices</a>
+          扩展，然后重新加载本扩展，声音即会出现在上方列表。注意：在 Read Aloud 扩展内下载的 Supertonic 声音不会显示在此处。
+        </span>
       </div>
-      <span class="field-desc">中英文分别选择，避免同一段文字在两种音色之间跳。留空由浏览器自动选择该语言的最佳语音；下拉框会优先排列 Premium / Enhanced 高质量语音。</span>
-      <span class="field-desc" id="tts-voices-empty" style="display: none;">正在加载声音列表…若长时间为空，请确认已安装相关 TTS 扩展并刷新设置页。</span>
-      <span class="field-desc" id="tts-supertonic-hint" style="color: #8a5b00; margin-top: 6px; line-height: 1.5; display: block;">
-        💡 想要高质量 AI 声音：优先使用系统自带的 Premium / Enhanced 语音（如 macOS 的 Serena、Jamie、Tom、Evan，中文可在「系统设置 → 辅助功能 → 朗读内容 → 系统语音 → 管理语音」下载），它们由系统直接合成，起播更快、更稳定。
-        若仍想使用「Supertonic M3」等第三方神经语音，请先安装独立的
-        <a href="https://chromewebstore.google.com/detail/supertonic-text-to-speech/mdoplmghlkjcnegkdhocjbjcncocbdhk" target="_blank" rel="noopener">Supertonic Text-to-Speech Voices</a>
-        扩展，然后重新加载本扩展，声音即会出现在上方列表。注意：在 Read Aloud 扩展内下载的 Supertonic 声音不会显示在此处。
-      </span>
+
+      <div class="section hidden" id="tts-kokoro-fields">
+        <label class="field">
+          <span class="field-label">Kokoro 服务地址</span>
+          <input type="text" id="kokoroBaseUrl" placeholder="http://localhost:8880" />
+          <span class="field-desc">Kokoro-FastAPI 默认端口 8880，使用 OpenAI 兼容接口 <code>/v1/audio/speech</code>。</span>
+        </label>
+        <div class="grid-2">
+          <label class="field">
+            <span class="field-label">模型名称</span>
+            <input type="text" id="kokoroModel" placeholder="kokoro" />
+            <span class="field-desc">多数 Kokoro-FastAPI 部署填 <code>kokoro</code> 即可。</span>
+          </label>
+          <label class="field">
+            <span class="field-label">音频格式</span>
+            <select id="kokoroFormat">
+              <option value="mp3">mp3（推荐，体积小）</option>
+              <option value="wav">wav（服务端无 ffmpeg 时使用）</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid-2">
+          <label class="field">
+            <span class="field-label">英文语音</span>
+            <input type="text" id="kokoroVoiceEn" list="kokoro-voices" placeholder="af_heart" />
+          </label>
+          <label class="field">
+            <span class="field-label">中文语音</span>
+            <input type="text" id="kokoroVoiceZh" list="kokoro-voices" placeholder="zf_xiaobei" />
+            <datalist id="kokoro-voices"></datalist>
+          </label>
+        </div>
+        <span class="field-desc">常用英文音色：af_heart、af_bella、af_nicole、am_michael、bm_george；中文音色：zf_xiaobei、zf_xiaoxiao、zf_xiaoyi、zm_yunjian、zm_yunxi。</span>
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 8px;">
+          <button type="button" class="secondary" id="btnTestKokoro">测试 Kokoro 连接</button>
+          <span class="field-desc" id="kokoro-status" style="margin-top: 0;"></span>
+        </div>
+        <span class="field-desc">语速（rate）会作为 Kokoro 的 <code>speed</code> 参数；音调（pitch）对 Kokoro 无效。</span>
+      </div>
+
       <div class="grid-2">
         <label class="field">
           <span class="field-label">语速（rate）</span>
           <input type="number" id="ttsRate" min="0.5" max="2" step="0.05" value="1" />
         </label>
         <label class="field">
-          <span class="field-label">音调（pitch）</span>
+          <span class="field-label">音调（pitch，仅浏览器语音）</span>
           <input type="number" id="ttsPitch" min="0.5" max="2" step="0.05" value="1" />
         </label>
       </div>

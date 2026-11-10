@@ -30,11 +30,25 @@
 
   function els_tts() {
     return {
+      ttsEngine: () => document.getElementById("ttsEngine"),
       ttsVoiceEn: () => document.getElementById("ttsVoiceEn"),
       ttsVoiceZh: () => document.getElementById("ttsVoiceZh"),
       ttsRate: () => document.getElementById("ttsRate"),
-      ttsPitch: () => document.getElementById("ttsPitch")
+      ttsPitch: () => document.getElementById("ttsPitch"),
+      browserFields: () => document.getElementById("tts-browser-fields"),
+      kokoroFields: () => document.getElementById("tts-kokoro-fields"),
+      kokoroBaseUrl: () => document.getElementById("kokoroBaseUrl"),
+      kokoroModel: () => document.getElementById("kokoroModel"),
+      kokoroFormat: () => document.getElementById("kokoroFormat"),
+      kokoroVoiceEn: () => document.getElementById("kokoroVoiceEn"),
+      kokoroVoiceZh: () => document.getElementById("kokoroVoiceZh")
     };
+  }
+
+  function syncTtsSections() {
+    const engine = els_tts().ttsEngine().value === "kokoro" ? "kokoro" : "browser";
+    els_tts().browserFields().classList.toggle("hidden", engine !== "browser");
+    els_tts().kokoroFields().classList.toggle("hidden", engine !== "kokoro");
   }
 
   function syncSections() {
@@ -55,8 +69,14 @@
       temperature: parseFloat(els.temperature().value),
       maxTokens: parseInt(els.maxTokens().value, 10),
       showPageBtn: els.showPageBtn().checked,
+      ttsEngine: els_tts().ttsEngine().value === "kokoro" ? "kokoro" : "browser",
       ttsVoiceNameEn: els_tts().ttsVoiceEn().value || "",
       ttsVoiceNameZh: els_tts().ttsVoiceZh().value || "",
+      kokoroBaseUrl: els_tts().kokoroBaseUrl().value.trim() || "http://localhost:8880",
+      kokoroModel: els_tts().kokoroModel().value.trim() || "kokoro",
+      kokoroFormat: els_tts().kokoroFormat().value === "wav" ? "wav" : "mp3",
+      kokoroVoiceEn: els_tts().kokoroVoiceEn().value.trim() || "af_heart",
+      kokoroVoiceZh: els_tts().kokoroVoiceZh().value.trim() || "zf_xiaobei",
       ttsRate: parseFloat(els_tts().ttsRate().value) || 1,
       ttsPitch: parseFloat(els_tts().ttsPitch().value) || 1
     };
@@ -120,6 +140,55 @@
     });
   }
 
+  // Kokoro v1.1 常用音色；连接测试成功后会替换成服务端返回的完整列表。
+  const DEFAULT_KOKORO_VOICES = [
+    "af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky",
+    "am_michael", "am_adam", "am_fenrir", "bf_emma", "bm_george",
+    "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+    "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"
+  ];
+
+  function fillKokoroDatalist(voices) {
+    const list = document.getElementById("kokoro-voices");
+    if (!list) return;
+    list.textContent = "";
+    (voices || []).forEach(function (name) {
+      const o = document.createElement("option");
+      o.value = name;
+      list.appendChild(o);
+    });
+  }
+
+  function testKokoro() {
+    const el = document.getElementById("kokoro-status");
+    const base = els_tts().kokoroBaseUrl().value.trim() || "http://localhost:8880";
+    if (el) {
+      el.textContent = "正在连接 " + base + " …";
+      el.style.color = "";
+    }
+    chrome.runtime.sendMessage({ type: "KOKORO_TEST", kokoroBaseUrl: base }, function (res) {
+      if (!el) return;
+      if (chrome.runtime.lastError) {
+        el.textContent = "测试失败：" + chrome.runtime.lastError.message;
+        el.style.color = "#c0392b";
+        return;
+      }
+      if (!res || !res.ok) {
+        el.textContent = "连接失败：" + (res ? res.error : "未知错误");
+        el.style.color = "#c0392b";
+        return;
+      }
+      const voices = res.voices || [];
+      if (voices.length) {
+        fillKokoroDatalist(voices);
+        el.textContent = "连接成功，发现 " + voices.length + " 个音色（可点击输入框选择）";
+      } else {
+        el.textContent = "连接成功";
+      }
+      el.style.color = "#1e7b34";
+    });
+  }
+
   function load() {
     chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, function (res) {
       if (chrome.runtime.lastError) {
@@ -137,14 +206,22 @@
       // tts
       try {
         const legacyVoice = s.ttsVoiceName || "";
+        els_tts().ttsEngine().value = s.ttsEngine === "kokoro" ? "kokoro" : "browser";
+        els_tts().kokoroBaseUrl().value = s.kokoroBaseUrl || "http://localhost:8880";
+        els_tts().kokoroModel().value = s.kokoroModel || "kokoro";
+        els_tts().kokoroFormat().value = s.kokoroFormat === "wav" ? "wav" : "mp3";
+        els_tts().kokoroVoiceEn().value = s.kokoroVoiceEn || "af_heart";
+        els_tts().kokoroVoiceZh().value = s.kokoroVoiceZh || "zf_xiaobei";
         els_tts().ttsVoiceEn().setAttribute("data-saved", s.ttsVoiceNameEn || legacyVoice);
         els_tts().ttsVoiceZh().setAttribute("data-saved", s.ttsVoiceNameZh || legacyVoice);
         fillVoiceSelect();
+        fillKokoroDatalist(DEFAULT_KOKORO_VOICES);
       } catch (e) {}
       els.showPageBtn().checked = s.showPageBtn !== false;
       els_tts().ttsRate().value = s.ttsRate != null ? s.ttsRate : 1;
       els_tts().ttsPitch().value = s.ttsPitch != null ? s.ttsPitch : 1;
       syncSections();
+      syncTtsSections();
     });
   }
 
@@ -198,8 +275,10 @@
   document.querySelectorAll('input[name="backend"]').forEach(function (rb) {
     rb.addEventListener("change", syncSections);
   });
+  document.getElementById("ttsEngine").addEventListener("change", syncTtsSections);
   document.getElementById("btnSave").addEventListener("click", save);
   document.getElementById("btnTest").addEventListener("click", test);
+  document.getElementById("btnTestKokoro").addEventListener("click", testKokoro);
 
   load();
 })();
