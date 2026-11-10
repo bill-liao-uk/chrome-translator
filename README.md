@@ -111,6 +111,17 @@ Supertonic audio is synthesized and played by its own extension (it keeps a pinn
 3. The button shows progress (e.g. `退出对照（12/40）`).
 4. Click the button again (or the `重试` button on a failed paragraph) to stop/retry. Stopping removes all injected translations.
 
+## How to install HTTP TTS Kokoro-82M
+docker pull ghcr.io/remsky/kokoro-fastapi-cpu:latest
+
+docker run -d \
+--name kokoro-tts \
+--restart unless-stopped \
+-p 8880:8880 \
+ghcr.io/remsky/kokoro-fastapi-cpu:latest
+
+to test local TTS:  http://localhost:8880/web
+
 ## Notes
 
 - The extension uses Chrome's TTS engine (`chrome.tts`) for voice playback; voice quality depends on your operating system, browser, and any installed TTS voices or extensions.
