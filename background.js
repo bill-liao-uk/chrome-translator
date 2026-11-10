@@ -165,93 +165,287 @@ function ttsGetVoices() {
       resolve([]);
       return;
     }
-    chrome.tts.getVoices((voices) => {
+    let done = false;
+    const finish = (voices) => {
+      if (done) return;
+      done = true;
       resolve(voices || []);
-    });
+    };
+    const tryGet = (tries) => {
+      try {
+        chrome.tts.getVoices((voices) => {
+          if (voices && voices.length) {
+            finish(voices);
+          } else if (tries >= 15) {
+            finish([]);
+          } else {
+            // service worker 冷启动后首次 getVoices 常返回空列表（语音还在异步加载）。
+            // 此时直接朗读会用不上用户配置的语音，听起来像“发音不正常”。
+            setTimeout(() => tryGet(tries + 1), 60);
+          }
+        });
+      } catch (e) {
+        finish([]);
+      }
+    };
+    tryGet(0);
   });
 }
 
-function ttsSpeak(text, options, retryWithDefaultVoice, isCurrentRequest) {
+const ttsWarmups = new Map();
+
+// 用一段静音占位（volume 为 0）让语音引擎完成首次初始化。chrome.tts 在
+// service worker 冷启动后的第一次朗读经常吞音、只读半截或音色异常，
+// 预热后再朗读可以规避。等占位自然结束（或超时）再放行，避免在途替换。
+function primeTtsEngine(options) {
+  return new Promise((resolve) => {
+    if (!chrome.tts || typeof chrome.tts.speak !== "function") {
+      resolve();
+      return;
+    }
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const warmOptions = {
+      volume: 0,
+      rate: 2,
+      enqueue: false,
+      onEvent: function (event) {
+        if (done || !event) return;
+        if (event.type === "end" || event.type === "error" ||
+          event.type === "interrupted" || event.type === "cancelled") {
+          finish();
+        }
+      }
+    };
+    // 用与真正朗读相同的语音/语言预热，避免预热的是另一个引擎
+    if (options && options.lang) warmOptions.lang = options.lang;
+    if (options && options.voiceName) warmOptions.voiceName = options.voiceName;
+    try {
+      // 不传回调：回调会在真正发声之前就返回，无法代表预热完成。
+      // 只等占位读完（end）或超时，确保引擎与声道已就绪。
+      chrome.tts.speak("1", warmOptions);
+    } catch (e) {
+      finish();
+      return;
+    }
+    setTimeout(finish, 700);
+  });
+}
+
+function ensureTtsEngineWarmed(options) {
+  const key = ((options && options.voiceName) || "") + "|" + ((options && options.lang) || "");
+  let warmup = ttsWarmups.get(key);
+  if (!warmup) {
+    warmup = primeTtsEngine(options).then(function () {
+      // 预热结束后稍等片刻，让引擎把发音通道准备好
+      return new Promise(function (r) { setTimeout(r, 120); });
+    });
+    ttsWarmups.set(key, warmup);
+  }
+  return warmup;
+}
+
+function ttsIsSpeaking() {
+  return new Promise((resolve) => {
+    if (!chrome.tts || typeof chrome.tts.isSpeaking !== "function") {
+      resolve(null);
+      return;
+    }
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    try {
+      const maybePromise = chrome.tts.isSpeaking((speaking) => finish(!!speaking));
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.then((value) => finish(!!value), () => finish(null));
+      }
+    } catch (e) {
+      finish(null);
+    }
+    // 老版本 Chrome 只支持回调；长时间不回调时不要卡住重试流程
+    setTimeout(() => finish(null), 300);
+  });
+}
+
+function ttsSpeak(text, options, isCurrentRequest) {
   return new Promise((resolve) => {
     if (!chrome.tts || typeof chrome.tts.speak !== "function") {
       resolve({ ok: false, error: "浏览器不支持 chrome.tts" });
       return;
     }
 
-    let attempt = 0;
+    const MAX_ATTEMPTS = 3;
     let settled = false;
-    let fallbackAttempted = false;
-    let transientRetryAttempted = false;
+    let activeAttempt = 0;
+    let endNotified = false;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       resolve(result);
     };
-    const retry = (useDefaultVoice) => {
+    // 无论正常读完、被中断还是重试耗尽，调用方只应收到一次结束通知
+    const notifyTerminal = (event) => {
+      if (endNotified) return;
+      endNotified = true;
+      if (options.onEvent) options.onEvent(event);
+    };
+
+    const runAttempt = (attemptNo) => {
       if (!isCurrentRequest()) {
         finish({ ok: false, cancelled: true });
         return;
       }
-      attempt++;
-      ttsStop();
-      setTimeout(() => speakAttempt(useDefaultVoice), 180);
-    };
-    const handleFailure = (useDefaultVoice, errorMessage) => {
-      if (!useDefaultVoice && retryWithDefaultVoice && !fallbackAttempted) {
-        fallbackAttempted = true;
-        retry(true);
-        return;
-      }
-      if (!transientRetryAttempted) {
-        transientRetryAttempted = true;
-        retry(useDefaultVoice);
-        return;
-      }
-      console.error("[划线翻译] 语音引擎朗读失败:", errorMessage || "未知错误");
-      if (options.onEvent) options.onEvent({ type: "error", errorMessage });
-      finish({ ok: false, error: errorMessage || "朗读引擎出错" });
-    };
-    const speakAttempt = (useDefaultVoice) => {
-      if (!isCurrentRequest()) {
-        finish({ ok: false, cancelled: true });
-        return;
-      }
-      const attemptId = ++attempt;
-      let terminalEventReceived = false;
+      activeAttempt = attemptNo;
       const attemptOptions = Object.assign({}, options);
-      if (useDefaultVoice) delete attemptOptions.voiceName;
-      attemptOptions.onEvent = function (event) {
-        if (attemptId !== attempt || terminalEventReceived || !event || !isCurrentRequest()) return;
-        if (event.type === "error") {
-          terminalEventReceived = true;
-          handleFailure(useDefaultVoice, event.errorMessage);
+      // 第一次尝试使用用户配置的语音，之后退回浏览器为该语言选择的默认语音
+      if (attemptNo > 1) delete attemptOptions.voiceName;
+
+      let attemptOver = false;
+      let started = false;
+      let watchdog = null;
+      let spokeDetected = false;
+      let probeTimer = null;
+
+      const endAttempt = (ok, errorMessage) => {
+        if (attemptOver) return;
+        attemptOver = true;
+        if (watchdog) {
+          clearTimeout(watchdog);
+          watchdog = null;
+        }
+        if (probeTimer) {
+          clearInterval(probeTimer);
+          probeTimer = null;
+        }
+        if (ok) {
+          finish({ ok: true });
           return;
         }
-        if (event.type === "end" || event.type === "interrupted" || event.type === "cancelled") {
-          terminalEventReceived = true;
+        if (!isCurrentRequest()) {
+          finish({ ok: false, cancelled: true });
+          return;
+        }
+        if (attemptNo < MAX_ATTEMPTS) {
+          // 先彻底停掉这次失败的朗读，等引擎复位后再试（逐次拉长等待时间），
+          // 否则残留的 stop / 未结束的朗读会把下一次朗读继续吞掉。
+          try {
+            if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
+          } catch (e) {
+            // ignore
+          }
+          setTimeout(() => runAttempt(attemptNo + 1), 250 + attemptNo * 150);
+          return;
+        }
+        console.error("[划线翻译] 语音引擎朗读失败:", errorMessage || "未知错误");
+        notifyTerminal({ type: "error", errorMessage });
+        finish({ ok: false, error: errorMessage || "朗读引擎出错" });
+      };
+
+      // 少数语音引擎不派发任何事件。此时靠 isSpeaking() 判断是否真的在发声，
+      // 并在朗读结束后补发结束通知，避免调用方的按钮状态永远卡在“朗读中”。
+      const pollEndWithoutEvents = () => {
+        const deadline = Date.now() + 120000;
+        const tick = () => {
+          if (attemptNo !== activeAttempt || !isCurrentRequest()) return;
+          ttsIsSpeaking().then((speaking) => {
+            if (attemptNo !== activeAttempt || !isCurrentRequest()) return;
+            if (speaking === false) {
+              notifyTerminal({ type: "end" });
+              return;
+            }
+            if (Date.now() > deadline) return;
+            setTimeout(tick, 250);
+          });
+        };
+        setTimeout(tick, 250);
+      };
+
+      attemptOptions.onEvent = function (event) {
+        // 忽略已被后续尝试取代的旧尝试事件，避免误发 TTS_END
+        if (!event || attemptNo !== activeAttempt || !isCurrentRequest()) return;
+        if (event.type === "start") {
+          started = true;
+          endAttempt(true);
+          return;
+        }
+        if (event.type === "error") {
+          if (attemptOver) {
+            // 已经开始朗读后中途出错：通知调用方复位，不再重试
+            notifyTerminal(event);
+            return;
+          }
+          endAttempt(false, event.errorMessage || "语音引擎出错");
+          return;
+        }
+        if (event.type === "end") {
+          endAttempt(true);
+          notifyTerminal(event);
+          return;
+        }
+        if (event.type === "interrupted" || event.type === "cancelled") {
+          if (!started) endAttempt(false, "朗读被中断");
+          else notifyTerminal(event);
+          return;
         }
         if (options.onEvent) options.onEvent(event);
       };
 
-      // 添加延时确保上一个朗读任务完全结束
-      setTimeout(() => {
-        chrome.tts.speak(text, attemptOptions, () => {
-          if (attemptId !== attempt || terminalEventReceived) return;
-          if (!isCurrentRequest()) {
-            finish({ ok: false, cancelled: true });
+      // 引擎吞音时既没有事件也没有回调，必须靠超时判定失败并自动重试，
+      // 否则第一次点击会毫无反应（且调用方状态一直卡住）。
+      // 同时采样 isSpeaking()，用于识别“确实发声但不派发事件”的语音引擎。
+      probeTimer = setInterval(() => {
+        if (attemptOver) return;
+        ttsIsSpeaking().then((speaking) => {
+          if (speaking === true) spokeDetected = true;
+        });
+      }, 300);
+      watchdog = setTimeout(() => {
+        if (attemptOver) return;
+        if (!isCurrentRequest()) {
+          endAttempt(false, "已取消");
+          return;
+        }
+        ttsIsSpeaking().then((speaking) => {
+          if (attemptOver) return;
+          if (speaking === true) {
+            // 确实在发声，只是该语音不派发事件：视为成功，并等待真正读完
+            endAttempt(true);
+            pollEndWithoutEvents();
             return;
           }
-          const error = chrome.runtime.lastError;
-          if (error) {
-            handleFailure(useDefaultVoice, error.message);
-          } else {
-            finish({ ok: true });
+          if (spokeDetected) {
+            // 曾采样到正在发声，说明已经读过（只是没有事件），补发结束通知
+            endAttempt(true);
+            notifyTerminal({ type: "end" });
+            return;
           }
+          endAttempt(false, "语音引擎无响应");
         });
-      }, 50);
+      }, 1200);
+
+      try {
+        chrome.tts.speak(text, attemptOptions, function () {
+          if (attemptNo !== activeAttempt) return;
+          const error = chrome.runtime.lastError;
+          // 这个回调在引擎真正发声之前就会返回，只能用来发现参数级错误，
+          // 不能当作“朗读成功”的依据。是否真正开始朗读由 start/end 事件判定，
+          // 没有事件时交给 watchdog 超时重试。旧实现把回调当作成功，导致
+          // 第一次点击被引擎吞掉时既不重试也不恢复状态（第二次才正常）。
+          if (error) endAttempt(false, error.message);
+        });
+      } catch (e) {
+        endAttempt(false, (e && e.message) || String(e));
+      }
     };
 
-    speakAttempt(false);
+    runAttempt(1);
   });
 }
 
@@ -378,10 +572,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           };
           if (voice) options.voiceName = voice.voiceName;
+          // 首次朗读前先静音预热语音引擎，规避冷启动时吞音/半截/音色异常
+          await ensureTtsEngineWarmed(options);
+          if (requestVersion !== ttsRequestVersion) {
+            sendResponse({ ok: false, cancelled: true });
+            break;
+          }
           const res = await ttsSpeak(
             String(textKey || ""),
             options,
-            !!voice,
             () => requestVersion === ttsRequestVersion
           );
           sendResponse(res);

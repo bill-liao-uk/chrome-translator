@@ -14,25 +14,26 @@
   let lastSelection = { text: "", rect: null, t: 0 };
   let speaking = null;
 
+  function clearSpeakActive() {
+    document.querySelectorAll("." + NS + "speak." + NS + "active,." +
+      NS + "para-speak." + NS + "active").forEach(function (b) {
+      b.classList.remove(NS + "active");
+    });
+  }
+
   function stopSpeech() {
-    if (speaking) {
-      const currentSpeaking = speaking;
-      speaking = null;
-      try {
-        chrome.runtime.sendMessage({ type: "TTS_STOP" }, function () {
-          if (chrome.runtime.lastError) {
-            console.error("[划线翻译] 停止朗读失败:", chrome.runtime.lastError.message);
-          }
-        });
-      } catch (e) {
-        console.error("[划线翻译] 停止朗读失败:", e);
-      }
-      
-      // 清除所有活跃的朗读按钮状态
-      document.querySelectorAll("." + NS + "active").forEach(function (b) {
-        b.classList.remove(NS + "active");
+    if (!speaking) return;
+    speaking = null;
+    try {
+      chrome.runtime.sendMessage({ type: "TTS_STOP" }, function () {
+        if (chrome.runtime.lastError) {
+          console.error("[划线翻译] 停止朗读失败:", chrome.runtime.lastError.message);
+        }
       });
+    } catch (e) {
+      console.error("[划线翻译] 停止朗读失败:", e);
     }
+    clearSpeakActive();
   }
 
   function speak(text, lang) {
@@ -40,17 +41,25 @@
     if (speaking) {
       stopSpeech();
     }
-    
-    const u = {};
+
+    const u = { _ctText: String(text).slice(0, MAX_TEXT) };
     speaking = u;
     doSpeak(text, lang, u);
     return true;
   }
 
+  // 只有当前这一次朗读仍有效时才复位状态，避免旧请求的失败/结束
+  // 通知把新一次朗读的按钮状态清掉。
+  function resetSpeakState(u) {
+    if (speaking !== u) return;
+    speaking = null;
+    clearSpeakActive();
+  }
+
   function doSpeak(text, lang, u) {
     // 确保在发送请求前仍然有效
     if (speaking !== u) return;
-    
+
     try {
       chrome.runtime.sendMessage(
         {
@@ -61,18 +70,22 @@
         function (res) {
           if (chrome.runtime.lastError) {
             console.error("[划线翻译] 朗读请求失败:", chrome.runtime.lastError.message);
-            if (speaking === u) speaking = null;
+            resetSpeakState(u);
             return;
           }
-          if (res && !res.ok && !res.cancelled) {
+          if (res && res.cancelled) {
+            resetSpeakState(u);
+            return;
+          }
+          if (res && !res.ok) {
             console.error("[划线翻译] 朗读请求失败:", res.error || "未知错误");
-            if (speaking === u) speaking = null;
+            resetSpeakState(u);
           }
         }
       );
     } catch (e) {
       console.error("[划线翻译] 朗读请求失败:", e);
-      if (speaking === u) speaking = null;
+      resetSpeakState(u);
     }
   }
 
@@ -809,10 +822,10 @@
 
   chrome.runtime.onMessage.addListener(function (msg) {
     if (msg && msg.type === "TTS_END") {
+      // 忽略过期/其它来源（如 popup）的朗读结束通知
+      if (speaking && msg.text && speaking._ctText && msg.text !== speaking._ctText) return;
       speaking = null;
-      document.querySelectorAll("." + NS + "active").forEach(function (b) {
-        b.classList.remove(NS + "active");
-      });
+      clearSpeakActive();
     }
   });
 
