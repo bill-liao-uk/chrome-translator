@@ -36,15 +36,35 @@
     clearSpeakActive();
   }
 
+  // 提前（静音）预热语音引擎，避免首次点击朗读时引擎尚未就绪
+  function warmupTts(lang) {
+    try {
+      chrome.runtime.sendMessage({ type: "TTS_WARMUP", lang: lang }, function () {
+        if (chrome.runtime.lastError) {
+          // 预热失败不影响后续朗读，忽略即可
+        }
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function speak(text, lang) {
     // 如果正在朗读，先停止
-    if (speaking) {
+    const wasSpeaking = !!speaking;
+    if (wasSpeaking) {
       stopSpeech();
     }
 
     const u = { _ctText: String(text).slice(0, MAX_TEXT) };
     speaking = u;
-    doSpeak(text, lang, u);
+    // 刚 stop 就立刻 speak 容易与引擎的停止清理竞争，导致新朗读被吞掉半截。
+    // 稍等片刻再发请求，让引擎完成复位。
+    if (wasSpeaking) {
+      setTimeout(function () { doSpeak(text, lang, u); }, 120);
+    } else {
+      doSpeak(text, lang, u);
+    }
     return true;
   }
 
@@ -220,6 +240,9 @@
     positionPanel(rect);
     panel.style.display = "block";
 
+    // 静音预热对应语言的语音引擎，用户稍后点击“朗读原文”时可立即正常发声
+    warmupTts(VOICE_LANG[lang] || "en-US");
+
     panel.querySelector("." + NS + "head").addEventListener("pointerdown", onHeadPointerDown);
 
     const srcBtn = panel.querySelector("." + NS + "speak-src");
@@ -251,6 +274,7 @@
       targetEl.textContent = res.text;
       tgtBtn.disabled = false;
       const tgtLang = detectLang(res.text);
+      warmupTts(VOICE_LANG[tgtLang] || "en-US");
       tgtBtn.addEventListener("click", function () {
         if (speak(res.text, tgtLang)) this.classList.add(NS + "active");
       });

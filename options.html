@@ -205,17 +205,24 @@
 
     <div class="card">
       <h2>朗读设置</h2>
-      <label class="field">
-        <span class="field-label">朗读声音</span>
-        <select id="ttsVoice"></select>
-        <span class="field-desc">选择朗读语音（含浏览器系统语音及第三方扩展注册的语音）。若留空将由浏览器自动选择最佳匹配。</span>
-        <span class="field-desc" id="tts-supertonic-hint" style="color: #8a5b00; margin-top: 6px; line-height: 1.5; display: block;">
-          💡 若想使用「Supertonic M3」等高质量 AI 声音：请先安装独立的
-          <a href="https://chromewebstore.google.com/detail/supertonic-text-to-speech/mdoplmghlkjcnegkdhocjbjcncocbdhk" target="_blank" rel="noopener">Supertonic Text-to-Speech Voices</a>
-          扩展，然后重新加载本扩展，声音即会出现在上方列表。注意：在 Read Aloud 扩展内下载的 Supertonic 声音不会显示在此处。
-        </span>
-        <span class="field-desc" id="tts-voices-empty" style="display: none;">正在加载声音列表…若长时间为空，请确认已安装相关 TTS 扩展并刷新设置页。</span>
-      </label>
+      <div class="grid-2">
+        <label class="field">
+          <span class="field-label">英文朗读声音</span>
+          <select id="ttsVoiceEn"></select>
+        </label>
+        <label class="field">
+          <span class="field-label">中文朗读声音</span>
+          <select id="ttsVoiceZh"></select>
+        </label>
+      </div>
+      <span class="field-desc">中英文分别选择，避免同一段文字在两种音色之间跳。留空由浏览器自动选择该语言的最佳语音；下拉框会优先排列 Premium / Enhanced 高质量语音。</span>
+      <span class="field-desc" id="tts-voices-empty" style="display: none;">正在加载声音列表…若长时间为空，请确认已安装相关 TTS 扩展并刷新设置页。</span>
+      <span class="field-desc" id="tts-supertonic-hint" style="color: #8a5b00; margin-top: 6px; line-height: 1.5; display: block;">
+        💡 想要高质量 AI 声音：优先使用系统自带的 Premium / Enhanced 语音（如 macOS 的 Serena、Jamie、Tom、Evan，中文可在「系统设置 → 辅助功能 → 朗读内容 → 系统语音 → 管理语音」下载），它们由系统直接合成，起播更快、更稳定。
+        若仍想使用「Supertonic M3」等第三方神经语音，请先安装独立的
+        <a href="https://chromewebstore.google.com/detail/supertonic-text-to-speech/mdoplmghlkjcnegkdhocjbjcncocbdhk" target="_blank" rel="noopener">Supertonic Text-to-Speech Voices</a>
+        扩展，然后重新加载本扩展，声音即会出现在上方列表。注意：在 Read Aloud 扩展内下载的 Supertonic 声音不会显示在此处。
+      </span>
       <div class="grid-2">
         <label class="field">
           <span class="field-label">语速（rate）</span>

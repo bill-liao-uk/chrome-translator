@@ -30,7 +30,8 @@
 
   function els_tts() {
     return {
-      ttsVoice: () => document.getElementById("ttsVoice"),
+      ttsVoiceEn: () => document.getElementById("ttsVoiceEn"),
+      ttsVoiceZh: () => document.getElementById("ttsVoiceZh"),
       ttsRate: () => document.getElementById("ttsRate"),
       ttsPitch: () => document.getElementById("ttsPitch")
     };
@@ -54,7 +55,8 @@
       temperature: parseFloat(els.temperature().value),
       maxTokens: parseInt(els.maxTokens().value, 10),
       showPageBtn: els.showPageBtn().checked,
-      ttsVoiceName: els_tts().ttsVoice().value || "",
+      ttsVoiceNameEn: els_tts().ttsVoiceEn().value || "",
+      ttsVoiceNameZh: els_tts().ttsVoiceZh().value || "",
       ttsRate: parseFloat(els_tts().ttsRate().value) || 1,
       ttsPitch: parseFloat(els_tts().ttsPitch().value) || 1
     };
@@ -69,24 +71,52 @@
     });
   }
 
+  // Premium / Enhanced 语音由系统神经网络合成，通常比 Compact 及第三方扩展语音更稳，
+  // 排在最前面方便优先选用。
+  function voiceRank(name) {
+    if (/\(premium\)/i.test(name)) return 0;
+    if (/\(enhanced\)/i.test(name)) return 1;
+    if (/\(compact\)/i.test(name)) return 3;
+    return 2;
+  }
+
   function fillVoiceSelect() {
-    const sel = els_tts().ttsVoice();
-    sel.textContent = "";
+    const selEn = els_tts().ttsVoiceEn();
+    const selZh = els_tts().ttsVoiceZh();
     const emptyHint = document.getElementById("tts-voices-empty");
     if (emptyHint) emptyHint.style.display = "block";
     chrome.runtime.sendMessage({ type: "TTS_GET_VOICES" }, function (res) {
       if (emptyHint) emptyHint.style.display = "none";
       if (chrome.runtime.lastError || !res || !res.voices) return;
       const voices = res.voices;
-      const addOpt = (v) => {
-        const o = document.createElement("option");
-        o.value = v.voiceName;
-        o.textContent = v.voiceName + " — " + (v.lang || "?");
-        sel.appendChild(o);
+      const langCode = (v) => String(v.lang || "").replace("_", "-").toLowerCase().split("-")[0];
+      const fill = (sel, prefix) => {
+        if (!sel) return;
+        sel.textContent = "";
+        const auto = document.createElement("option");
+        auto.value = "";
+        auto.textContent = "自动选择（推荐）";
+        sel.appendChild(auto);
+        voices
+          .filter(function (v) { return langCode(v) === prefix; })
+          .sort(function (a, b) {
+            return voiceRank(a.voiceName) - voiceRank(b.voiceName) ||
+              a.voiceName.localeCompare(b.voiceName);
+          })
+          .forEach(function (v) {
+            const o = document.createElement("option");
+            o.value = v.voiceName;
+            o.textContent = v.voiceName + " — " + (v.lang || "?");
+            sel.appendChild(o);
+          });
+        const saved = sel.getAttribute("data-saved") || "";
+        // 只回填确实存在且属于该语言的语音，避免旧设置里的英文语音显示在中文下拉框。
+        sel.value = Array.prototype.some.call(sel.options, function (o) {
+          return o.value === saved;
+        }) ? saved : "";
       };
-      voices.forEach(addOpt);
-      const saved = sel.getAttribute("data-saved") || "";
-      if (saved) sel.value = saved;
+      fill(selEn, "en");
+      fill(selZh, "zh");
     });
   }
 
@@ -106,8 +136,9 @@
       els.maxTokens().value = s.maxTokens != null ? s.maxTokens : 512;
       // tts
       try {
-        const sel = els_tts().ttsVoice();
-        sel.setAttribute("data-saved", s.ttsVoiceName || "");
+        const legacyVoice = s.ttsVoiceName || "";
+        els_tts().ttsVoiceEn().setAttribute("data-saved", s.ttsVoiceNameEn || legacyVoice);
+        els_tts().ttsVoiceZh().setAttribute("data-saved", s.ttsVoiceNameZh || legacyVoice);
         fillVoiceSelect();
       } catch (e) {}
       els.showPageBtn().checked = s.showPageBtn !== false;

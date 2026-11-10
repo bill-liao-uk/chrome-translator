@@ -9,7 +9,10 @@ const DEFAULT_SETTINGS = {
   // UI settings
   showPageBtn: true,
   // TTS settings
+  // ttsVoiceName 是旧版单语音设置，仅作为按语言设置留空时的兜底
   ttsVoiceName: "",
+  ttsVoiceNameEn: "",
+  ttsVoiceNameZh: "",
   ttsRate: 1,
   ttsPitch: 1
 };
@@ -159,7 +162,8 @@ async function testConnection(settings) {
   return { models };
 }
 
-function ttsGetVoices() {
+function ttsGetVoices(isReady, maxTries) {
+  const limit = maxTries || 20;
   return new Promise((resolve) => {
     if (!chrome.tts || typeof chrome.tts.getVoices !== "function") {
       resolve([]);
@@ -174,14 +178,17 @@ function ttsGetVoices() {
     const tryGet = (tries) => {
       try {
         chrome.tts.getVoices((voices) => {
-          if (voices && voices.length) {
-            finish(voices);
-          } else if (tries >= 15) {
-            finish([]);
+          const list = voices || [];
+          // 语音列表可能已经返回，但用户配置的语音仍在异步加载中；
+          // 此时过早朗读会退回默认语音，听起来像“发音不正常”。
+          const ready = !!isReady && list.length > 0 && isReady(list);
+          if (list.length > 0 && (ready || !isReady)) {
+            finish(list);
+          } else if (tries >= limit) {
+            finish(list);
           } else {
             // service worker 冷启动后首次 getVoices 常返回空列表（语音还在异步加载）。
-            // 此时直接朗读会用不上用户配置的语音，听起来像“发音不正常”。
-            setTimeout(() => tryGet(tries + 1), 60);
+            setTimeout(() => tryGet(tries + 1), 80);
           }
         });
       } catch (e) {
@@ -192,7 +199,24 @@ function ttsGetVoices() {
   });
 }
 
+// 等待语音列表里出现用户配置的语音（若已配置），避免冷启动时退回到默认语音。
+// 第三方语音扩展的语音偶尔会短暂从列表里消失：见过这个语音时稍等即可，
+// 从未见过（冷启动/刚安装）时多等一会儿（约 2 秒）。
+function ttsGetVoicesForSettings(ttsSettings, lang) {
+  const wanted = ttsVoiceNameForLang(ttsSettings, lang);
+  if (!wanted) return ttsGetVoices();
+  const maxTries = ttsKnownVoices.has(wanted) ? 10 : 25;
+  return ttsGetVoices(function (list) {
+    return list.some(function (v) { return v.voiceName === wanted; });
+  }, maxTries);
+}
+
 const ttsWarmups = new Map();
+// 仍在进行中的预热。正式朗读必须等它们全部结束，
+// 否则另一种语言/音色的预热占位会把刚开始的朗读打断（只读半截或首音丢失）。
+const ttsPendingWarmups = new Set();
+// 最近一次语音引擎活动的结束时间，用于保证两次朗读之间的最小间隔。
+let ttsLastActiveAt = 0;
 
 // 用一段静音占位（volume 为 0）让语音引擎完成首次初始化。chrome.tts 在
 // service worker 冷启动后的第一次朗读经常吞音、只读半截或音色异常，
@@ -217,13 +241,17 @@ function primeTtsEngine(options) {
         if (done || !event) return;
         if (event.type === "end" || event.type === "error" ||
           event.type === "interrupted" || event.type === "cancelled") {
+          ttsLastActiveAt = Date.now();
           finish();
         }
       }
     };
-    // 用与真正朗读相同的语音/语言预热，避免预热的是另一个引擎
+    // 用与真正朗读相同的语音/语言/语速/音调预热，避免预热的是一个
+    // 完全不同的引擎配置，真正朗读时仍要重新初始化。
     if (options && options.lang) warmOptions.lang = options.lang;
     if (options && options.voiceName) warmOptions.voiceName = options.voiceName;
+    if (options && options.rate) warmOptions.rate = options.rate;
+    if (options && options.pitch) warmOptions.pitch = options.pitch;
     try {
       // 不传回调：回调会在真正发声之前就返回，无法代表预热完成。
       // 只等占位读完（end）或超时，确保引擎与声道已就绪。
@@ -232,19 +260,59 @@ function primeTtsEngine(options) {
       finish();
       return;
     }
-    setTimeout(finish, 700);
+    // 语音引擎首次加载可能较慢，留足时间；超时后仍会继续真正朗读
+    setTimeout(finish, 1200);
   });
 }
 
-function ensureTtsEngineWarmed(options) {
+function waitUntilTtsSilent(maxMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + maxMs;
+    const tick = () => {
+      ttsIsSpeaking().then((speaking) => {
+        // null 表示浏览器未提供 isSpeaking，直接放行
+        if (speaking === false || speaking === null || Date.now() >= deadline) {
+          resolve();
+          return;
+        }
+        setTimeout(tick, 120);
+      });
+    };
+    tick();
+  });
+}
+
+// 与上一次发声之间留出最小间隔。引擎报 end 之后仍可能在做内部收尾，
+// 紧接着开始的新朗读容易被截断（只读半截、首音丢失）。
+function waitForTtsSettle(minGapMs) {
+  const waitMs = Math.max(0, (ttsLastActiveAt || 0) + minGapMs - Date.now());
+  return new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
+function waitForPendingWarmups() {
+  if (!ttsPendingWarmups.size) return Promise.resolve();
+  return Promise.all(Array.from(ttsPendingWarmups)).then(function () {});
+}
+
+function ensureTtsEngineWarmed(options, voiceIsExtension) {
+  // 第三方语音扩展（Supertonic 等）有自己的固定宿主页和常驻合成器，
+  // 静音占位反而会让它多合成一次、还可能取消正在进行的合成，
+  // 因而这类语音完全交给扩展自己初始化，只靠放宽超时来等待。
+  if (voiceIsExtension) return Promise.resolve();
   const key = ((options && options.voiceName) || "") + "|" + ((options && options.lang) || "");
   let warmup = ttsWarmups.get(key);
   if (!warmup) {
-    warmup = primeTtsEngine(options).then(function () {
-      // 预热结束后稍等片刻，让引擎把发音通道准备好
-      return new Promise(function (r) { setTimeout(r, 120); });
-    });
+    warmup = primeTtsEngine(options)
+      // 占位结束后引擎可能仍在收尾，等它真正静下来再朗读，
+      // 否则紧接着的 speak 会打断收尾中的引擎，出现“只有半截音”。
+      .then(() => waitUntilTtsSilent(800))
+      .then(function () {
+        return new Promise(function (r) { setTimeout(r, 250); });
+      });
     ttsWarmups.set(key, warmup);
+    ttsPendingWarmups.add(warmup);
+    const unregister = function () { ttsPendingWarmups.delete(warmup); };
+    warmup.then(unregister, unregister);
   }
   return warmup;
 }
@@ -274,7 +342,22 @@ function ttsIsSpeaking() {
   });
 }
 
-function ttsSpeak(text, options, isCurrentRequest) {
+// chrome.tts.speak 会严格校验 options，出现任何未知属性都会直接报错而不朗读。
+// 这里只保留官方支持的字段，避免内部标记/调试字段泄漏到 API 参数里。
+const TTS_SPEAK_OPTION_KEYS = [
+  "voiceName", "extensionId", "lang", "gender", "rate", "pitch", "volume",
+  "enqueue", "requiredEventTypes", "desiredEventTypes", "onEvent"
+];
+
+function sanitizeTtsOptions(options) {
+  const out = {};
+  for (const key of TTS_SPEAK_OPTION_KEYS) {
+    if (options && options[key] !== undefined) out[key] = options[key];
+  }
+  return out;
+}
+
+function ttsSpeak(text, options, isCurrentRequest, voiceIsExtension) {
   return new Promise((resolve) => {
     if (!chrome.tts || typeof chrome.tts.speak !== "function") {
       resolve({ ok: false, error: "浏览器不支持 chrome.tts" });
@@ -285,6 +368,9 @@ function ttsSpeak(text, options, isCurrentRequest) {
     let settled = false;
     let activeAttempt = 0;
     let endNotified = false;
+    // 只有语音引擎明确报错时才改用默认语音；超时/中断重试仍保留用户选择的语音，
+    // 否则用户会听到音色/口音突然改变，误以为“发音异常”。
+    let forceDefaultVoice = false;
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -303,12 +389,13 @@ function ttsSpeak(text, options, isCurrentRequest) {
         return;
       }
       activeAttempt = attemptNo;
-      const attemptOptions = Object.assign({}, options);
-      // 第一次尝试使用用户配置的语音，之后退回浏览器为该语言选择的默认语音
-      if (attemptNo > 1) delete attemptOptions.voiceName;
+      const attemptOptions = sanitizeTtsOptions(options);
+      // 保留用户配置的语音重试；仅在引擎明确报错或最后一次尝试时退回默认语音
+      if (attemptNo >= MAX_ATTEMPTS || forceDefaultVoice) delete attemptOptions.voiceName;
 
       let attemptOver = false;
       let started = false;
+      let startedAt = 0;
       let watchdog = null;
       let spokeDetected = false;
       let probeTimer = null;
@@ -333,14 +420,17 @@ function ttsSpeak(text, options, isCurrentRequest) {
           return;
         }
         if (attemptNo < MAX_ATTEMPTS) {
+          console.warn("[划线翻译] 朗读未正常开始，准备第 " + (attemptNo + 1) + " 次尝试:", errorMessage || "未知原因");
           // 先彻底停掉这次失败的朗读，等引擎复位后再试（逐次拉长等待时间），
           // 否则残留的 stop / 未结束的朗读会把下一次朗读继续吞掉。
+          // 第三方扩展语音的 stop 也要经宿主页处理，留更长的间隔避免 stop 抢在新朗读之后到达。
           try {
             if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
           } catch (e) {
             // ignore
           }
-          setTimeout(() => runAttempt(attemptNo + 1), 250 + attemptNo * 150);
+          const retryDelay = voiceIsExtension ? 800 : 400 + attemptNo * 150;
+          setTimeout(() => runAttempt(attemptNo + 1), retryDelay);
           return;
         }
         console.error("[划线翻译] 语音引擎朗读失败:", errorMessage || "未知错误");
@@ -370,8 +460,13 @@ function ttsSpeak(text, options, isCurrentRequest) {
       attemptOptions.onEvent = function (event) {
         // 忽略已被后续尝试取代的旧尝试事件，避免误发 TTS_END
         if (!event || attemptNo !== activeAttempt || !isCurrentRequest()) return;
+        if (event.type === "end" || event.type === "error" ||
+          event.type === "interrupted" || event.type === "cancelled") {
+          ttsLastActiveAt = Date.now();
+        }
         if (event.type === "start") {
           started = true;
+          startedAt = Date.now();
           endAttempt(true);
           return;
         }
@@ -381,10 +476,19 @@ function ttsSpeak(text, options, isCurrentRequest) {
             notifyTerminal(event);
             return;
           }
+          // 语音本身不可用：后续尝试改用浏览器默认语音。
+          // 第三方扩展语音的 error 多是“合成器尚未就绪”之类的临时状态，
+          // 换默认语音会让音色突然改变，所以仍用原语音重试。
+          if (!voiceIsExtension) forceDefaultVoice = true;
           endAttempt(false, event.errorMessage || "语音引擎出错");
           return;
         }
         if (event.type === "end") {
+          // 诊断用：正常读完一个多字符文本不可能只用几十毫秒，
+          // 出现这种时长说明引擎只读出了部分音节（便于用户反馈问题时排查）
+          if (startedAt && text.length >= 3 && Date.now() - startedAt < 120) {
+            console.warn("[划线翻译] 朗读时长异常短，可能只读出了部分音节:", text, (Date.now() - startedAt) + "ms");
+          }
           endAttempt(true);
           notifyTerminal(event);
           return;
@@ -405,7 +509,10 @@ function ttsSpeak(text, options, isCurrentRequest) {
         ttsIsSpeaking().then((speaking) => {
           if (speaking === true) spokeDetected = true;
         });
-      }, 300);
+      }, 150);
+      // 第三方扩展语音需要先唤醒宿主页、加载模型再合成，启动明显更慢，
+      // 给足时间避免误判超时而重复朗读（重叠的朗读会互相取消、只读半截）。
+      const watchdogMs = voiceIsExtension ? 8000 : 1800;
       watchdog = setTimeout(() => {
         if (attemptOver) return;
         if (!isCurrentRequest()) {
@@ -428,7 +535,7 @@ function ttsSpeak(text, options, isCurrentRequest) {
           }
           endAttempt(false, "语音引擎无响应");
         });
-      }, 1200);
+      }, watchdogMs);
 
       try {
         chrome.tts.speak(text, attemptOptions, function () {
@@ -450,6 +557,7 @@ function ttsSpeak(text, options, isCurrentRequest) {
 }
 
 function ttsStop() {
+  ttsLastActiveAt = Date.now();
   try {
     if (chrome.tts && typeof chrome.tts.stop === "function") chrome.tts.stop();
   } catch (e) {
@@ -457,16 +565,29 @@ function ttsStop() {
   }
 }
 
-function ttsPickVoice(voices, lang, ttsSettings) {
+function ttsLangMatches(voiceLang, lang) {
+  if (!voiceLang) return false;
   const norm = (l) => String(l).replace("_", "-").toLowerCase();
-  const langMatches = (v) => {
-    if (!v.lang) return false;
-    const l = norm(v.lang);
-    const base = norm(lang).split("-")[0];
-    return l === norm(lang) || l.split("-")[0] === base;
-  };
-  if (ttsSettings && ttsSettings.ttsVoiceName) {
-    const byName = voices.find((v) => v.voiceName === ttsSettings.ttsVoiceName && langMatches(v));
+  const l = norm(voiceLang);
+  return l === norm(lang) || l.split("-")[0] === norm(lang).split("-")[0];
+}
+
+// 按文本语言取用户配置的语音名。中英文可以分别配置，互不干扰：
+// 之前只有一个 ttsVoiceName，选了英文语音后中文译文会退回 Chrome 默认中文语音，
+// 同一段中英混排文字还会在两种音色之间跳。
+function ttsVoiceNameForLang(ttsSettings, lang) {
+  if (!ttsSettings) return "";
+  const code = String(lang || "").replace("_", "-").toLowerCase().split("-")[0];
+  if (code === "zh" && ttsSettings.ttsVoiceNameZh) return ttsSettings.ttsVoiceNameZh;
+  if (code === "en" && ttsSettings.ttsVoiceNameEn) return ttsSettings.ttsVoiceNameEn;
+  return ttsSettings.ttsVoiceName || "";
+}
+
+function ttsPickVoice(voices, lang, ttsSettings) {
+  const langMatches = (v) => ttsLangMatches(v.lang, lang);
+  const wanted = ttsVoiceNameForLang(ttsSettings, lang);
+  if (wanted) {
+    const byName = voices.find((v) => v.voiceName === wanted && langMatches(v));
     if (byName) return byName;
   }
   // An unconfigured voice may belong to an intermittently available TTS
@@ -474,7 +595,44 @@ function ttsPickVoice(voices, lang, ttsSettings) {
   return null;
 }
 
+// 记住每个语音所属语言与来源（是否由第三方扩展提供），
+// 供“配置语音暂时不在列表里”时判断能否继续使用，也用于调整朗读节奏。
+const ttsKnownVoices = new Map(); // voiceName -> { lang, extensionId }
+
+// 取本次朗读要用的语音。第三方语音扩展的语音偶尔会短暂从 getVoices 列表里消失，
+// 此时如果退回浏览器默认语音，用户会听到完全不同的音色/口音（听起来像“发音异常”）。
+// 只要之前见过这个语音且语言匹配，就仍然按配置朗读；真的不可用时引擎会报错，
+// 再由重试逻辑退回默认语音。
+function ttsResolveVoice(voices, lang, ttsSettings) {
+  const list = voices || [];
+  for (const v of list) {
+    if (v && v.voiceName) {
+      ttsKnownVoices.set(v.voiceName, {
+        lang: v.lang || "",
+        extensionId: v.extensionId || ""
+      });
+    }
+  }
+  const picked = ttsPickVoice(list, lang, ttsSettings);
+  if (picked) {
+    const known = ttsKnownVoices.get(picked.voiceName) || {};
+    return {
+      voiceName: picked.voiceName,
+      lang: picked.lang,
+      extensionId: known.extensionId || ""
+    };
+  }
+  const wanted = ttsVoiceNameForLang(ttsSettings, lang);
+  if (!wanted) return null;
+  const known = ttsKnownVoices.get(wanted);
+  if (!known || !ttsLangMatches(known.lang, lang)) return null;
+  console.warn("[划线翻译] 语音列表暂未包含已配置的语音，仍按配置朗读:", wanted);
+  return { voiceName: wanted, lang: known.lang, extensionId: known.extensionId || "" };
+}
+
 let ttsRequestVersion = 0;
+// 正在进行（含等待预热）的朗读请求数量；有朗读在等待时不要再启动预热去抢引擎
+let ttsActiveSpeaks = 0;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const requestVersion = msg && (msg.type === "TTS_SPEAK" || msg.type === "TTS_STOP")
@@ -527,6 +685,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
         }
         break;
+      case "TTS_WARMUP":
+        {
+          // 划线取词面板打开时提前预热语音引擎（静音），
+          // 让用户点击“朗读原文/译文”时引擎已经就绪。
+          // 如果当前已经有朗读在进行或即将开始，说明引擎已经热了，不要打断它。
+          const alreadySpeaking = await ttsIsSpeaking();
+          if (alreadySpeaking !== true && ttsActiveSpeaks === 0) {
+            const settings = await getSettings();
+            const lang = String(msg.lang || "en-US");
+            const voices = await ttsGetVoicesForSettings(settings, lang);
+            const voice = ttsResolveVoice(voices, lang, settings);
+            const warmOptions = {
+              lang: lang,
+              rate: Number(settings.ttsRate) || 1,
+              pitch: Number(settings.ttsPitch) || 1
+            };
+            if (voice) warmOptions.voiceName = voice.voiceName;
+            // 第三方扩展语音有自己的宿主页/合成器，静音占位反而会干扰它，直接跳过；
+            // 其它情况下若已有朗读请求在等待，也不用再预热去抢引擎。
+            const isExtensionVoice = !!(voice && voice.extensionId);
+            if (!isExtensionVoice && ttsActiveSpeaks === 0) {
+              await ensureTtsEngineWarmed(warmOptions);
+            }
+          }
+          sendResponse({ ok: true });
+        }
+        break;
       case "TTS_SPEAK":
         {
           const settings = await getSettings();
@@ -534,13 +719,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, cancelled: true });
             break;
           }
-          const voices = await ttsGetVoices();
+          const lang = String(msg.lang || "en-US");
+          const voices = await ttsGetVoicesForSettings(settings, lang);
           if (requestVersion !== ttsRequestVersion) {
             sendResponse({ ok: false, cancelled: true });
             break;
           }
-          const lang = String(msg.lang || "en-US");
-          const voice = ttsPickVoice(voices, lang, settings);
+          const voice = ttsResolveVoice(voices, lang, settings);
           const tabId = sender && sender.tab ? sender.tab.id : null;
           const textKey = String(msg.text || "");
           const options = {
@@ -572,18 +757,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           };
           if (voice) options.voiceName = voice.voiceName;
-          // 首次朗读前先静音预热语音引擎，规避冷启动时吞音/半截/音色异常
-          await ensureTtsEngineWarmed(options);
-          if (requestVersion !== ttsRequestVersion) {
-            sendResponse({ ok: false, cancelled: true });
-            break;
+          // 语音来源只作为内部标记，绝不能放进 chrome.tts.speak 的 options：
+          // Chrome 会校验参数并抛出 "Unexpected property" 而不是朗读。
+          const voiceIsExtension = !!(voice && voice.extensionId);
+          ttsActiveSpeaks++;
+          try {
+            // 第三方语音扩展自己合成/播放音频，收尾更慢，需要更长的间隔，
+            // 否则下一句容易从扩展的音频元素里被“截断”着开始。
+            const settleMs = voice && voice.extensionId ? 600 : 300;
+            const voiceLabel = voice
+              ? (voice.extensionId
+                ? voice.voiceName + "（第三方扩展 " + voice.extensionId + "）"
+                : voice.voiceName + "（内置）")
+              : "浏览器默认";
+            console.info("[划线翻译] 朗读语音:", voiceLabel, "| 语言:", lang, "| 文本:", textKey.slice(0, 40));
+            // 内置语音首次朗读前先静音预热，规避冷启动时吞音/半截/音色异常。
+            // 第三方扩展语音完全交给扩展自己初始化（见 ensureTtsEngineWarmed）。
+            await ensureTtsEngineWarmed(options, voiceIsExtension);
+            // 另一种语言/音色的预热占位可能仍在进行，等它结束再朗读
+            await waitForPendingWarmups();
+            // 预热或其它朗读可能仍在收尾，等引擎静下来、并留出最小间隔再真正朗读
+            await waitUntilTtsSilent(800);
+            await waitForTtsSettle(settleMs);
+            if (requestVersion !== ttsRequestVersion) {
+              sendResponse({ ok: false, cancelled: true });
+              break;
+            }
+            const res = await ttsSpeak(
+              String(textKey || ""),
+              options,
+              () => requestVersion === ttsRequestVersion,
+              voiceIsExtension
+            );
+            sendResponse(res);
+          } finally {
+            ttsActiveSpeaks--;
           }
-          const res = await ttsSpeak(
-            String(textKey || ""),
-            options,
-            () => requestVersion === ttsRequestVersion
-          );
-          sendResponse(res);
         }
         break;
       case "TTS_STOP":
