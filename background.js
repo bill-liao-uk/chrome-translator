@@ -712,17 +712,47 @@ function kokoroKeepAliveStop() {
 }
 
 // Kokoro 一次合成过长文本时容易受 token 上限影响，而且整段合成要等很久才出声。
-// 这里按句子切分（每段不超过 300 字符），逐段合成、逐段播放，句间还可以预取下一段。
+// 这里按句子切分（后续每段不超过 300 字符），逐段合成、逐段播放，句间还可以预取下一段。
+// 第一段故意切得短一些（约 80 字符）：整段合成是“全部生成完才返回”，
+// 首段越短，点击朗读后听到第一个字就越快；后续段落仍用较大的长度减少请求次数。
 const KOKORO_MAX_CHUNK = 300;
+const KOKORO_FIRST_CHUNK = 80;
+// 允许为了在标点处断句而略微超出长度上限，避免把 "everything else," 这类短语拆开
+const KOKORO_CUT_TOLERANCE = 20;
 
-function splitKokoroText(text, maxLen) {
+// 选择切分点：优先在逗号/分号/冒号等标点之后断开（可略微超过上限），
+// 找不到合适的标点再退回最近的空格，避免从短语中间切开。
+function findKokoroCut(text, max) {
+  const hardEnd = Math.min(text.length, max + KOKORO_CUT_TOLERANCE);
+  const softStart = Math.floor(max * 0.6);
+  for (let i = hardEnd - 1; i >= softStart; i--) {
+    if (!/[,.!?;:。，！？；：、]/.test(text[i])) continue;
+    // 标点后面的引号/括号也并入当前段，避免下一段以标点开头
+    let cut = i + 1;
+    while (cut < text.length && /["'”’）)\]】」』]/.test(text[cut])) cut++;
+    if (cut <= max + KOKORO_CUT_TOLERANCE) return cut;
+  }
+  let cut = text.lastIndexOf(" ", max);
+  if (cut < max * 0.5) cut = max;
+  return cut;
+}
+
+function splitKokoroText(text, maxLen, firstMaxLen) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   if (!clean) return [];
-  if (clean.length <= maxLen) return [clean];
+
+  const hardMax = Math.max(1, maxLen || KOKORO_MAX_CHUNK);
+  const firstMax = Math.max(1, Math.min(firstMaxLen || hardMax, hardMax));
+  if (clean.length <= firstMax) return [clean];
 
   const parts = clean.match(/[^.!?。！？;；]+[.!?。！？;；]*/g) || [clean];
   const chunks = [];
   let buf = "";
+
+  // 第一段用较小的上限，之后的段落用正常上限
+  function limit() {
+    return chunks.length === 0 ? firstMax : hardMax;
+  }
 
   function flush() {
     if (buf) chunks.push(buf);
@@ -730,25 +760,30 @@ function splitKokoroText(text, maxLen) {
   }
 
   function join(a, b) {
-    // 中文句子之间不需要空格，英文需要在单词间补一个空格
-    const needSpace = /[A-Za-z0-9]$/.test(a) && /^[A-Za-z0-9]/.test(b);
+    // 中文句子之间不需要空格；英文需要在单词/句子之间补一个空格
+    // （上一句以 . ! ? 等标点结尾时也要补，否则会读成 "quickly.Another"）
+    const last = a.slice(-1);
+    const first = b.charAt(0);
+    const cjk = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff。，！？；：、]/;
+    const needSpace = !cjk.test(last) && !cjk.test(first) &&
+      /[A-Za-z0-9.,!?;:'")\]]$/.test(last) && /^[A-Za-z0-9"'(\[]/.test(first);
     return a + (needSpace ? " " : "") + b;
   }
 
   parts.forEach(function (part) {
     const piece = part.trim();
     if (!piece) return;
-    if (buf && buf.length + piece.length + 1 > maxLen) flush();
-    if (piece.length <= maxLen) {
+    if (buf && buf.length + piece.length + 1 > limit()) flush();
+    if (piece.length <= limit()) {
       buf = buf ? join(buf, piece) : piece;
       return;
     }
-    // 单句超长：按空格尽量切成不超过 maxLen 的片段
+    // 单句超长：优先在标点处切分，避免拆开短语
     flush();
     let rest = piece;
-    while (rest.length > maxLen) {
-      let cut = rest.lastIndexOf(" ", maxLen);
-      if (cut < maxLen * 0.5) cut = maxLen;
+    while (rest.length > limit()) {
+      const max = limit();
+      const cut = findKokoroCut(rest, max);
       const head = rest.slice(0, cut).trim();
       if (head) chunks.push(head);
       rest = rest.slice(cut).trim();
@@ -759,11 +794,14 @@ function splitKokoroText(text, maxLen) {
   return chunks;
 }
 
-async function kokoroFetchAudio(text, lang, settings) {
+// prefetchSignal 只用于面板打开时的提前合成：它有自己的取消信号，
+// 不能占用全局 kokoroAbort，否则用户点击朗读时会把预取请求误当成“上一段朗读”中止。
+async function kokoroFetchAudio(text, lang, settings, prefetchSignal) {
   const base = kokoroBaseUrl(settings);
   const format = settings.kokoroFormat === "wav" ? "wav" : "mp3";
-  const controller = new AbortController();
-  kokoroAbort = controller;
+  const controller = prefetchSignal ? null : new AbortController();
+  if (controller) kokoroAbort = controller;
+  const signal = prefetchSignal || controller.signal;
 
   let res;
   try {
@@ -778,14 +816,14 @@ async function kokoroFetchAudio(text, lang, settings) {
         speed: Number(settings.ttsRate) || 1,
         stream: false
       }),
-      signal: controller.signal
+      signal: signal
     });
   } catch (e) {
     if (e && e.name === "AbortError") throw e;
     throw new Error("无法连接本地 Kokoro TTS（" + base +
       "）。请确认服务已启动、端口正确，并重新加载扩展以授予本地访问权限。");
   } finally {
-    if (kokoroAbort === controller) kokoroAbort = null;
+    if (controller && kokoroAbort === controller) kokoroAbort = null;
   }
 
   if (!res.ok) {
@@ -804,6 +842,74 @@ async function kokoroFetchAudio(text, lang, settings) {
     bytes: await res.arrayBuffer(),
     mime: format === "wav" ? "audio/wav" : "audio/mpeg"
   };
+}
+
+// 面板打开 / 译文返回时提前合成第一小段。用户点击“朗读”时如果缓存命中，
+// 就能立即播放，不必再等 Kokoro 合成。缓存按“文本 + 语音 + 语速 + 格式”区分，
+// 最多保留几个最近使用的结果（每段都不长，内存占用很小）。
+const KOKORO_CACHE_LIMIT = 4;
+const kokoroAudioCache = new Map(); // key -> Promise<{ bytes, mime }>
+
+function kokoroCacheKey(text, lang, settings) {
+  return [
+    kokoroBaseUrl(settings),
+    String(settings.kokoroModel || "kokoro").trim() || "kokoro",
+    kokoroVoiceForLang(settings, lang),
+    settings.kokoroFormat === "wav" ? "wav" : "mp3",
+    Number(settings.ttsRate) || 1,
+    text
+  ].join("\u0001");
+}
+
+function kokoroCacheTake(key) {
+  const entry = kokoroAudioCache.get(key);
+  if (!entry) return null;
+  // 最近使用的结果移到末尾，超出上限时优先淘汰最久未用的
+  kokoroAudioCache.delete(key);
+  kokoroAudioCache.set(key, entry);
+  return entry;
+}
+
+function kokoroCachePut(key, promise) {
+  kokoroAudioCache.set(key, promise);
+  while (kokoroAudioCache.size > KOKORO_CACHE_LIMIT) {
+    const oldest = kokoroAudioCache.keys().next().value;
+    kokoroAudioCache.delete(oldest);
+  }
+  // 失败（服务未启动、超时等）的结果不能留在缓存里，否则下次点击仍会拿到同一个错误
+  promise.catch(function () {
+    if (kokoroAudioCache.get(key) === promise) kokoroAudioCache.delete(key);
+  });
+  return promise;
+}
+
+function kokoroPrefetch(text, lang, settings) {
+  const piece = String(text || "").trim();
+  if (!piece) return null;
+  const key = kokoroCacheKey(piece, lang, settings);
+  const cached = kokoroCacheTake(key);
+  if (cached) return cached;
+
+  const controller = new AbortController();
+  // 预取请求不能无限挂起，否则会一直占着服务端连接
+  const timer = setTimeout(function () {
+    try {
+      controller.abort();
+    } catch (e) {
+      // ignore
+    }
+  }, 30000);
+  const promise = kokoroFetchAudio(piece, lang, settings, controller.signal)
+    .finally(function () { clearTimeout(timer); });
+  return kokoroCachePut(key, promise);
+}
+
+// 朗读时优先使用预取结果；没有预取才现场请求（并记入缓存）。
+function kokoroGetChunk(text, lang, settings) {
+  const key = kokoroCacheKey(text, lang, settings);
+  const cached = kokoroCacheTake(key);
+  if (cached) return cached;
+  return kokoroCachePut(key, kokoroFetchAudio(text, lang, settings));
 }
 
 function kokoroPlayAudio(src, maxMs) {
@@ -878,13 +984,18 @@ async function kokoroSpeak(text, lang, settings, tabId, isCurrent) {
     ttsLastActiveAt = Date.now();
 
     const voice = kokoroVoiceForLang(settings, lang);
-    const chunks = splitKokoroText(textKey, KOKORO_MAX_CHUNK);
+    const chunks = splitKokoroText(textKey, KOKORO_MAX_CHUNK, KOKORO_FIRST_CHUNK);
     console.info("[划线翻译] 朗读语音: Kokoro " + voice + "（本地 " +
       kokoroBaseUrl(settings) + "） | 语言:", lang, "| 长度:", textKey.length,
-      "字符 /", chunks.length, "段 | 文本:", textKey.slice(0, 40));
+      "字符 /", chunks.length, "段（首段", chunks[0].length, "字符） | 文本:", textKey.slice(0, 40));
+
+    // 离屏文档首次创建也要几十到几百毫秒，和第一段合成并行进行，避免串行等待。
+    const offscreenReady = ensureOffscreenDocument();
+    offscreenReady.catch(function () { /* 真正的错误在下面 await 时处理 */ });
 
     // 先合成第一段，立刻播放；播放期间预取下一段，避免句与句之间的停顿。
-    let pending = kokoroFetchAudio(chunks[0], lang, settings);
+    // 首段若已在面板打开/译文返回时预取过，直接复用缓存，点击后几乎立刻出声。
+    let pending = kokoroGetChunk(chunks[0], lang, settings);
     pending.catch(function () { /* 真正的错误在下面的 await 里处理 */ });
 
     for (let i = 0; i < chunks.length; i++) {
@@ -892,11 +1003,11 @@ async function kokoroSpeak(text, lang, settings, tabId, isCurrent) {
       if (!isCurrent()) return { ok: false, cancelled: true };
 
       if (i + 1 < chunks.length) {
-        pending = kokoroFetchAudio(chunks[i + 1], lang, settings);
+        pending = kokoroGetChunk(chunks[i + 1], lang, settings);
         pending.catch(function () { /* 同上 */ });
       }
 
-      await ensureOffscreenDocument();
+      await offscreenReady;
       if (!isCurrent()) return { ok: false, cancelled: true };
 
       const src = bufferToDataUrl(audio.bytes, audio.mime);
@@ -1082,8 +1193,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const alreadySpeaking = await ttsIsSpeaking();
           if (alreadySpeaking !== true && ttsActiveSpeaks === 0) {
             const settings = await getSettings();
-            // Kokoro 走本地 HTTP，没有需要预热的浏览器引擎
+            // Kokoro 走本地 HTTP，没有需要预热的浏览器引擎；但可以提前创建
+            // 离屏播放文档并合成第一小段，用户点击朗读时就能直接播放。
             if (settings.ttsEngine === "kokoro") {
+              const lang = String(msg.lang || "en-US");
+              const text = String(msg.text || "").trim();
+              const offscreen = ensureOffscreenDocument().catch(function () {
+                /* 点击朗读时会再报错 */
+              });
+              let prefetch = null;
+              if (text) {
+                const firstChunk = splitKokoroText(text, KOKORO_MAX_CHUNK, KOKORO_FIRST_CHUNK)[0];
+                if (firstChunk) prefetch = kokoroPrefetch(firstChunk, lang, settings);
+              }
+              // 保持消息通道直到预取结束，避免 MV3 service worker 在请求途中被回收；
+              // 预取失败不影响点击朗读（届时会重新请求并显示错误）。
+              await Promise.all([
+                offscreen,
+                prefetch && prefetch.catch(function () { /* ignore */ })
+              ]);
               sendResponse({ ok: true });
               break;
             }

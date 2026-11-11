@@ -58,7 +58,8 @@ Notes:
 
 - `语速（rate）` is sent as Kokoro's `speed` parameter. `音调（pitch）` only applies to browser voices.
 - The background service worker downloads the audio, and an extension offscreen document plays it. This bypasses page CSP and mixed-content restrictions, so it works on any site.
-- Long paragraphs are split into sentence-sized pieces (≤300 characters each), synthesized one piece at a time, and the next piece is prefetched while the current one plays. This keeps the first sound fast, avoids per-request length limits, and makes pauses between sentences shorter.
+- Long paragraphs are split into sentence-sized pieces (≤300 characters each), synthesized one piece at a time, and the next piece is prefetched while the current one plays. Cuts prefer punctuation boundaries, so phrases such as `everything else,` are not split across pieces. The **first** piece is capped at about 80 characters (it may run a few characters longer to finish a phrase) so audio starts sooner, and the offscreen player is created in parallel.
+- Opening the selection panel (or receiving the translation) prefetches the first short piece in the background. Clicking `朗读原文` / `朗读译文` then usually plays from that cache immediately.
 - While Kokoro audio is playing, the service worker pings an extension API every 15 seconds. Manifest V3 service workers are otherwise terminated after about 30 seconds of idle time, which used to stop long paragraphs halfway through.
 - MP3 is the default because it keeps messages small. If your server has no `ffmpeg`, switch `音频格式` to `wav`.
 - Stop and re-selection semantics are shared with browser voices: stopping interrupts Kokoro audio, and a new utterance cancels the previous one.

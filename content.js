@@ -36,10 +36,14 @@
     clearSpeakActive();
   }
 
-  // 提前（静音）预热语音引擎，避免首次点击朗读时引擎尚未就绪
-  function warmupTts(lang) {
+  // 提前预热语音引擎（静音）或本地 Kokoro 首段，避免首次点击朗读时等待过久
+  function warmupTts(lang, text) {
     try {
-      chrome.runtime.sendMessage({ type: "TTS_WARMUP", lang: lang }, function () {
+      chrome.runtime.sendMessage({
+        type: "TTS_WARMUP",
+        lang: lang,
+        text: String(text || "").slice(0, MAX_TEXT)
+      }, function () {
         if (chrome.runtime.lastError) {
           // 预热失败不影响后续朗读，忽略即可
         }
@@ -47,6 +51,32 @@
     } catch (e) {
       // ignore
     }
+  }
+
+  // 鼠标在朗读按钮上停留片刻再预取，避免扫过按钮时发出大量合成请求
+  function warmupOnHover(btn, getText, getLang) {
+    let timer = null;
+    let warmedText = "";
+    function cancel() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+    btn.addEventListener("pointerenter", function () {
+      if (btn.disabled) return;
+      cancel();
+      timer = setTimeout(function () {
+        timer = null;
+        if (btn.disabled) return;
+        const text = String(getText() || "").slice(0, MAX_TEXT);
+        if (!text || text === warmedText) return;
+        warmedText = text;
+        warmupTts(getLang(), text);
+      }, 180);
+    });
+    btn.addEventListener("pointerleave", cancel);
+    btn.addEventListener("blur", cancel);
   }
 
   function speak(text, lang) {
@@ -241,7 +271,7 @@
     panel.style.display = "block";
 
     // 静音预热对应语言的语音引擎，用户稍后点击“朗读原文”时可立即正常发声
-    warmupTts(VOICE_LANG[lang] || "en-US");
+    warmupTts(VOICE_LANG[lang] || "en-US", text);
 
     panel.querySelector("." + NS + "head").addEventListener("pointerdown", onHeadPointerDown);
 
@@ -274,7 +304,7 @@
       targetEl.textContent = res.text;
       tgtBtn.disabled = false;
       const tgtLang = detectLang(res.text);
-      warmupTts(VOICE_LANG[tgtLang] || "en-US");
+      warmupTts(VOICE_LANG[tgtLang] || "en-US", res.text);
       tgtBtn.addEventListener("click", function () {
         if (speak(res.text, tgtLang)) this.classList.add(NS + "active");
       });
@@ -737,6 +767,11 @@
     });
     item.srcBtn = srcBtn;
     if (item.el && item.el.prepend) item.el.prepend(srcBtn);
+    warmupOnHover(srcBtn, function () {
+      return item.text;
+    }, function () {
+      return VOICE_LANG[item.srcLang] || "en-US";
+    });
 
     const tgtBtn = createSpeakBtn("朗读译文", true, function () {
       if (!item.tgtText) return;
@@ -746,6 +781,11 @@
     });
     item.tgtBtn = tgtBtn;
     textEl.prepend(tgtBtn);
+    warmupOnHover(tgtBtn, function () {
+      return item.tgtText;
+    }, function () {
+      return VOICE_LANG[detectLang(item.tgtText)] || "en-US";
+    });
 
     item.el.insertAdjacentElement("afterend", node);
   }
@@ -782,6 +822,11 @@
     pageState.progress = { done: 0, total: paras.length };
     pageBtn.classList.add(NS + "active");
     paras.forEach(createParaNode);
+    // 页面翻译期间先预热第一段原文，让模型加载和首段合成提前完成
+    const firstPara = paras[0];
+    if (firstPara) {
+      warmupTts(VOICE_LANG[firstPara.srcLang] || "en-US", firstPara.text);
+    }
     const queue = paras.slice();
     const workers = Math.min(PARA_CONCURRENCY, queue.length);
     for (let i = 0; i < workers; i++) {

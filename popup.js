@@ -43,6 +43,22 @@
     return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text) ? "zh" : "en";
   }
 
+  // 提前合成 Kokoro 首段（浏览器语音则提前预热引擎），点击朗读时更快出声
+  function warmupTts(text, lang) {
+    if (!text) return;
+    try {
+      chrome.runtime.sendMessage({
+        type: "TTS_WARMUP",
+        text: String(text).slice(0, 3000),
+        lang: lang
+      }, function () {
+        void chrome.runtime.lastError;
+      });
+    } catch (e) {
+      // 预热失败不影响朗读
+    }
+  }
+
   function doTranslate() {
     const text = input.value.trim();
     if (!text) {
@@ -70,6 +86,7 @@
       resultText.textContent = res.text;
       result.classList.add("show");
       setStatus("完成");
+      warmupTts(res.text, tgtLang === "zh" ? "zh-CN" : "en-US");
     });
   }
 
