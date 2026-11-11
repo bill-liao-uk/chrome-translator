@@ -11,7 +11,7 @@
 
   let icon = null;
   let panel = null;
-  let lastSelection = { text: "", rect: null, t: 0 };
+  let lastSelection = { text: "", rect: null, endRect: null, t: 0 };
   let speaking = null;
 
   function clearSpeakActive() {
@@ -150,6 +150,33 @@
     return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text) ? "zh" : "en";
   }
 
+  // 取选区末尾最后一个词的矩形。多行选区的 getBoundingClientRect() 返回的是
+  // 所有行合并后的外框，right 会落在整段最宽的一行末尾；这里改用最后一行的
+  // 末尾矩形（并去掉末尾空白），让“译”图标能贴在最后一个单词旁边。
+  function selectionEndRect(range) {
+    const r = range.cloneRange();
+    let guard = 0;
+    while (
+      guard++ < 200 &&
+      r.endContainer &&
+      r.endContainer.nodeType === Node.TEXT_NODE &&
+      r.endOffset > 0 &&
+      /\s/.test(r.endContainer.data.charAt(r.endOffset - 1))
+    ) {
+      r.setEnd(r.endContainer, r.endOffset - 1);
+    }
+    let rects = [];
+    try {
+      rects = Array.from(r.getClientRects());
+    } catch (e) {
+      rects = [];
+    }
+    for (let i = rects.length - 1; i >= 0; i--) {
+      if (rects[i].width > 0 || rects[i].height > 0) return rects[i];
+    }
+    return null;
+  }
+
   function captureSelection() {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !sel.toString()) return null;
@@ -159,9 +186,11 @@
     const r = sel.getRangeAt(0);
     const rect = r.getBoundingClientRect();
     if (!rect || (rect.width <= 0 && rect.height <= 0)) return null;
+    const end = selectionEndRect(r) || rect;
     return {
       text: sel.toString().trim().slice(0, MAX_TEXT),
-      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      endRect: { left: end.left, top: end.top, right: end.right, bottom: end.bottom }
     };
   }
 
@@ -175,13 +204,13 @@
     if (captured) {
       captured.t = Date.now();
       lastSelection = captured;
-      showIcon(captured.rect);
+      showIcon(captured.rect, captured.endRect);
       return;
     }
     // The site may have cleared the selection right after mouseup (e.g. LinkedIn),
     // so keep the icon while the last captured selection is still fresh.
     if (lastSelection && lastSelection.text && lastSelection.t && Date.now() - lastSelection.t <= SELECTION_GRACE_MS) {
-      showIcon(lastSelection.rect);
+      showIcon(lastSelection.rect, lastSelection.endRect);
     } else {
       hideIcon();
     }
@@ -197,12 +226,15 @@
     document.documentElement.appendChild(icon);
   }
 
-  function showIcon(rect) {
+  function showIcon(rect, endRect) {
     if (!icon) createIcon();
     const size = 26;
-    let x = Math.min(rect.right - size / 2, window.innerWidth - size - 4);
-    let y = rect.bottom + 6;
-    if (y + size > window.innerHeight - 4) y = Math.max(4, rect.top - size - 6);
+    // 有选区末尾矩形时，图标贴住最后一个单词的右上角；否则退回整段选区
+    const anchor = endRect || rect;
+    let x = Math.min(anchor.right - size / 2, window.innerWidth - size - 4);
+    let y = anchor.top - size - 6;
+    if (y < 4) y = anchor.bottom + 6;
+    if (y + size > window.innerHeight - 4) y = Math.max(4, window.innerHeight - size - 4);
     if (x < 4) x = 4;
     icon.style.left = x + "px";
     icon.style.top = y + "px";
@@ -516,7 +548,7 @@
     }
     if (down && Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y) < 5) {
       // A plain click that just collapsed the selection -> hide immediately.
-      lastSelection = { text: "", rect: null, t: 0 };
+      lastSelection = { text: "", rect: null, endRect: null, t: 0 };
       hideIcon();
     } else {
       scheduleSelectionUpdate();
@@ -568,7 +600,7 @@
 
   function onResize() {
     if (panel && lastSelection.rect) repositionPanel();
-    else if (icon && icon.style.display === "block" && lastSelection.rect) showIcon(lastSelection.rect);
+    else if (icon && icon.style.display === "block" && lastSelection.rect) showIcon(lastSelection.rect, lastSelection.endRect);
   }
 
   function isElementVisible(el) {
